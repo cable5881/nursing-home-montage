@@ -46,7 +46,7 @@ def launch():
     args=[sys.executable,str(Path(__file__).resolve()),'--project',str(pc.root()),'_serve']
     if shutil.which('rtk'):args=['rtk','proxy',*args]
     subprocess.Popen(args,stdout=log,stderr=log,start_new_session=True);log.close()
-    for _ in range(40):
+    for _ in range(150):
         if previous.exists():
             item=pc.read(previous)
             try:

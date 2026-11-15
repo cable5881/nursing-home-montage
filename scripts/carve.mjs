@@ -38,7 +38,7 @@ function lane(node,points){const timed=points.map(p=>({t:Number(p.t.toFixed(3)),
 const generated=analysis.analyseCarveDynamics(voice,rate,bands).flatMap((b,i)=>lane(filters[i],b.points));
 if(gain)generated.push(...lane(gain,duck));
 const previous=attr(bedTag,'data-automation')?JSON.parse(attr(bedTag,'data-automation')).lanes:[];
-const attrs={'data-fx-carve':{enabled:true,sources:[options.voice],strength},'data-fx-chain':{version:1,nodes:[...filters,...(gain?[gain]:[]),...kept]},'data-automation':{version:1,lanes:[...previous.filter(l=>!removed.some(p=>String(l.target).startsWith(p))),...generated]}};
+const attrs={'data-fx-carve':{enabled:true,sources:[options.voice],strength},'data-fx-chain':JSON.parse(effects.serializeAudioFxChain({version:1,nodes:[...filters,...(gain?[gain]:[]),...kept]})),'data-automation':{version:1,lanes:[...previous.filter(l=>!removed.some(p=>String(l.target).startsWith(p))),...generated]}};
 let updated=bedTag;
 for(const [key,value] of Object.entries(attrs)){updated=updated.replace(new RegExp('\\s'+key+'="[^"]*"','g'),'');updated=updated.replace(/>$/,' '+key+'="'+encode(JSON.stringify(value))+'">');}
 writeFileSync(file,html.replace(bedTag,updated));

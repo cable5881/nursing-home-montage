@@ -111,12 +111,15 @@ class PortableTests(unittest.TestCase):
         import subprocess,time,urllib.request
         script=Path(__file__).with_name('project.py')
         prefix=['rtk','proxy'] if __import__('shutil').which('rtk') else []
-        child=subprocess.Popen(prefix+[__import__('sys').executable,str(script),'--project',str(self.root),'_serve'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        log=open(self.root/'setup-test.log','w',encoding='utf-8')
+        child=subprocess.Popen(prefix+[__import__('sys').executable,str(script),'--project',str(self.root),'_serve'],stdout=log,stderr=log)
         try:
             record=pc.directory()/'setup-server.json'
-            for _ in range(100):
+            for _ in range(600):
                 if record.exists():break
+                if child.poll() is not None:raise RuntimeError((self.root/'setup-test.log').read_text(encoding='utf-8'))
                 time.sleep(.05)
+            if not record.exists():raise RuntimeError('Setup server did not become ready in 30s: '+(self.root/'setup-test.log').read_text(encoding='utf-8'))
             url=pc.read(record)['url']
             with urllib.request.urlopen(url) as response:self.assertIn('password',response.read().decode())
             data=json.dumps({'connection':'main','api_key':'local-form-fixture'}).encode()
@@ -131,5 +134,6 @@ class PortableTests(unittest.TestCase):
                 except ProcessLookupError:pass
             if child.poll() is None:child.terminate()
             child.wait(timeout=10)
+            log.close()
 
 if __name__=='__main__':unittest.main(verbosity=2)
