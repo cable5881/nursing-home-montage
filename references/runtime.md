@@ -22,4 +22,6 @@ provider-video.mp4是接口原片，digital-human.mp4是核验回传音频对齐
 
 check绑定HTML和实际引用资产的指纹，渲染输入变化重新检查。verify核对完整解码、1080×1920/30fps、语音哈希、字幕时长、中央实拍无黑帧、峰值和不足一帧的结尾补齐。固定CLI0.9.44，升级须随skill版本验证，不因安装到新电脑而自动换版本。
 
+本机已安装相同版本CLI、但npm启动卡住时，可在项目 `settings.render.cli_path` 引用其实际JS入口。编排器检查该入口所在hyperframes包的version与锁定值相同，再用Node直接调用；不把开发者电脑路径写进preset或技能代码。换电脑没有此路径时清除这个用户覆盖值，继续使用锁定版本安装流程。
+
 官方接口：[声音训练](https://docs.volcengine.com/docs/doubao-voice/tone-training-http?lang=zh)、[声音查询](https://docs.volcengine.com/docs/doubao-voice/tone-query-http?lang=zh)、[数字人生成](https://docs.volcengine.com/docs/jimeng-ai/omni-human20-video-generation-interface-documentation?lang=zh)。

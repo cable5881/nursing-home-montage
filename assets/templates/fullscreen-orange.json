@@ -1,0 +1,19 @@
+{
+  "id": "fullscreen-orange",
+  "reference_canvas": [916, 1717],
+  "caption": {
+    "font_size": 112,
+    "focus_ratio": 1.22,
+    "tracking": 4,
+    "angle": 3,
+    "scales": [[0.86610173, 0.91110476], [0.79593869, 0.80645161]],
+    "baselines": [1464, 1584],
+    "max_width": 750,
+    "limits": [100, 1250, 850, 1584],
+    "bottom_align": true,
+    "stroke": 10
+  },
+  "header": {"translation": [54, 120], "scale": 0.9, "title_width": 820, "brand_width": 790},
+  "chapter": {"rect": [60, 1025.1, 245, 76], "font_size": 46},
+  "avatar": {"x": 48, "bottom": 1120, "width": 400, "height": 550}
+}

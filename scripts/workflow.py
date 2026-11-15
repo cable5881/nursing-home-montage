@@ -23,9 +23,22 @@ def pcm_sha(path):return hashlib.sha256(run(['ffmpeg','-v','error','-i',path,'-v
 def settings(job):
     cfg=pc.resolved(job)
     if cfg['video']!={'width':1080,'height':1920,'fps':30}:raise ValueError('This approved template is 1080x1920 at 30fps; another format requires adapting its composition first')
+    ident=cfg.get('template',{}).get('id','legacy-orange')
+    if ident not in ('legacy-orange','orange','green','fullscreen-orange'):raise ValueError('Unknown template; choose legacy-orange, fullscreen-orange, orange or green')
+    for role,font in cfg.get('template',{}).get('overrides',{}).get('fonts',{}).items():
+        if font.get('file') and not Path(font['file']).is_file():raise ValueError('Template font is missing; fix the project font reference before production: '+role)
     a=cfg['avatar']
-    if a['width']<=0 or a['height']<=0 or a['x']<0 or a['x']+a['width']>1080 or a['bottom']>1506 or a['bottom']-a['height']<479:raise ValueError('Presenter must stay inside the real-footage region above captions')
+    min_y,max_y=(0,1920) if ident=='fullscreen-orange' else (479,1506)
+    if a['width']<=0 or a['height']<=0 or a['x']<0 or a['x']+a['width']>1080 or a['bottom']>max_y or a['bottom']-a['height']<min_y:raise ValueError('Presenter must stay inside the real-footage region above captions')
     return cfg
+def hyperframes_cli(job):
+    cfg=settings(job);entry=cfg.get('render',{}).get('cli_path')
+    if not entry:return ['npx','--yes','hyperframes@'+cfg['render']['cli_version']]
+    entry=Path(entry).resolve()
+    if not entry.is_file():raise ValueError('Configured HyperFrames CLI entry is missing')
+    package=next((p/'package.json' for p in entry.parents if (p/'package.json').is_file() and read(p/'package.json').get('name')=='hyperframes'),None)
+    if not package or read(package)['version']!=cfg['render']['cli_version']:raise ValueError('Configured HyperFrames CLI does not match the pinned version')
+    return ['node',str(entry)]
 def state(job,**fields):
     old=read(job/'state.json') if (job/'state.json').exists() else {}
     old.update(fields);write(job/'state.json',old);return old
@@ -116,15 +129,22 @@ def validate_plan(job):
         if fact['id'] in facts:raise ValueError('Duplicate fact id')
         facts[fact['id']]=fact
     if not plan['sentences']:raise ValueError('Narration cannot be empty')
+    closing=settings(job).get('closing_hook',{})
+    if closing.get('enabled') and plan['sentences'][-1].get('kind')!='cta':
+        raise ValueError('结尾需要独立 kind=cta 的引导句及真实视频镜头；本次明确不需要时设置 closing_hook.enabled=false')
     for i,s in enumerate(plan['sentences']):
         if not clean(s['text']):raise ValueError('Empty sentence')
-        if s.get('kind','fact')!='hook' and not s.get('factIds'):raise ValueError('Every factual sentence needs source references')
+        kind=s.get('kind','fact')
+        if kind not in ('fact','hook','cta'):raise ValueError('Sentence kind must be fact, hook or cta')
+        if kind=='cta' and i!=len(plan['sentences'])-1:raise ValueError('CTA must be the final sentence')
+        if kind=='fact' and not s.get('factIds'):raise ValueError('Every factual sentence needs source references')
         if any(x not in facts for x in s.get('factIds',[])):raise ValueError('Unknown fact reference')
         if not s.get('shots'):raise ValueError('Every sentence needs shots')
         for shot in s['shots']:
             row=files.get(shot['path'])
             if not row or row['kind'] not in ('image','video'):raise ValueError('Shot is not an input visual: '+shot['path'])
             if i==0 and row['kind']!='video':raise ValueError('Opening shots must be real video')
+            if kind=='cta' and row['kind']!='video':raise ValueError('Closing hook must continue real moving footage')
             if shot.get('sourceStart',0)<0 or shot.get('weight',1)<=0:raise ValueError('Invalid shot start or weight')
         if s.get('captions') and ''.join(clean(c['text']) for c in s['captions'])!=clean(s['text']):raise ValueError('Captions must cover the complete original sentence')
         for c in s.get('captions',[]):
@@ -139,7 +159,7 @@ def engine(job,args,service='speech'):
     script=runtime.get('adapters',{}).get(service,str(ENGINE/'scripts/generate.py'))
     return run(['uv','run','--python','3.11',script,*args],env=engine_env(job),check=False)
 def setup(job,install=False):
-    job.mkdir(parents=True,exist_ok=True);pc.freeze(job)
+    job.mkdir(parents=True,exist_ok=True);settings(job);pc.freeze(job)
     cfg=settings(job);template=SKILL/'assets/orange-template'
     for name in ('package.json','package-lock.json','hyperframes.json'):copy_asset(template/name,job/name)
     (job/'assets/fonts').mkdir(parents=True,exist_ok=True);(job/'assets/reference').mkdir(exist_ok=True)

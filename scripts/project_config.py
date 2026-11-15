@@ -104,7 +104,7 @@ def resolved(job):
         out['voice']['speaker']=p.get('speaker');out['voice']['speech_rate']=p.get('speech_rate',out['voice']['speech_rate'])
         out['voice']['custom_speaker_id']=p.get('custom_speaker_id')
         out['avatar']['portrait']=str(asset_path(p.get('portrait')))
-        out['person']={'id':p['id'],'name':p['name'],'connection':p['connection']}
+        out['person']={'id':p['id'],'name':p['name'],'spokenName':p.get('spoken_name',p['name']),'connection':p['connection']}
     out=merge(out,plan.get('settings',{}))
     conn=cfg['connections'].get(out.get('person',{}).get('connection'),{})
     out['service']={k:copy.deepcopy(conn[k]) for k in ('provider','storage','tts','avatar') if k in conn}

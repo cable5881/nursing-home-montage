@@ -1,4 +1,4 @@
 interface:
   display_name: "养老院素材混剪"
-  short_description: "将机构视频、图片和事实文本制作成橙色混剪成片，默认首尾数字人出镜"
-  default_prompt: "使用 $nursing-home-montage，根据我提供的机构素材制作带首尾数字人的橙色混剪成片。"
+  short_description: "将机构素材制作成可切换模板的混剪，开头数字人、结尾口播引导"
+  default_prompt: "使用 $nursing-home-montage，根据我提供的机构素材制作混剪成片，选择合适模板，开头数字人出镜，结尾加入引导口播与真实视频。"

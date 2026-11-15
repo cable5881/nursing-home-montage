@@ -53,6 +53,7 @@ def build(job):
         c['duration']=round(c['end']-c['start'],6)
         if c['duration']<=.2:raise ValueError('Caption has too little reading time; merge its wording with a neighbour')
     write(job/'captions.json',cues)
+    write(job/'caption-characters.json',{'sourceAudioSha256':v['sha256'],'characters':[{**c,'start':c['start']+offset,'end':c['end']+offset} for c in chars]})
     def stamp(t):
         ms=round(t*1000);h,ms=divmod(ms,3600000);m,ms=divmod(ms,60000);s,ms=divmod(ms,1000);return f'{h:02}:{m:02}:{s:02},{ms:03}'
     (job/'subtitles.srt').write_text('\n\n'.join(str(i+1)+'\n'+stamp(c['start'])+' --> '+stamp(c['end'])+'\n'+'\n'.join(c['lines']) for i,c in enumerate(cues))+'\n', encoding='utf-8')
@@ -108,7 +109,16 @@ def build(job):
     write(job/'build-inputs.json',{'planSha256':sha(job/'plan.json'),'voiceSha256':v['sha256'],'sourceHashes':{p:r['sha256'] for p,r in files.items()},'noPostTtsTimeStretch':True})
     state(job,phase='timed',next='avatars',duration=total)
     compose(job)
-    return {'duration':total,'shots':len(shots),'captions':len(cues),'avatarWindows':[[a['start'],a['start']+a['duration']] for a in avatars]}
+    return {'duration':total,'shots':len(shots),'captions':len(read(job/'captions.json')),'avatarWindows':[[a['start'],a['start']+a['duration']] for a in avatars]}
 
 def compose(job):
-    run([sys.executable,SKILL/'scripts/compose_orange.py',job])
+    cfg=settings(job);theme=cfg.get('template',{'id':'legacy-orange'})
+    ident=theme.get('id','legacy-orange')
+    if ident=='fullscreen-orange':
+        from compose_fullscreen import compose as compose_fullscreen
+        compose_fullscreen(job)
+    elif ident=='legacy-orange':
+        run([sys.executable,SKILL/'scripts/compose_orange.py',job])
+    else:
+        write(job/'template.json',{'id':ident,**theme.get('overrides',{})})
+        run([sys.executable,SKILL/'scripts/compose_reference.py',job,'--template',ident])

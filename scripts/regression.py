@@ -10,7 +10,7 @@ from build_job import compose
 import production
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--baseline',type=Path,required=True);p.add_argument('--out',type=Path,required=True);p.add_argument('--reference-video',type=Path,required=True);args=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--baseline',type=Path,required=True);p.add_argument('--out',type=Path,required=True);p.add_argument('--reference-video',type=Path,required=True);p.add_argument('--template',choices=('legacy-orange','orange','green'),default='legacy-orange');args=p.parse_args()
     source=args.baseline.resolve();job=args.out.resolve()
     if job.exists():raise RuntimeError('Use a new regression output directory')
     job.mkdir(parents=True)
@@ -25,7 +25,7 @@ def main():
     import project_config as pc
     metadata=pc.load().get('settings',{}).get('typography',{}).get('reference_identity') or {'name':'参考机构','displayName':'参考机构','headline':'养老院实地看'}
     write(job/'institution.json',{**metadata,'headerMode':'reference'})
-    write(job/'plan.json',{'settings':{}})
+    write(job/'plan.json',{'settings':{'template':{'id':args.template},'closing_hook':{'enabled':False}}})
     compose(job);production.check(job);production.snapshot(job,'2.2,51.5,56.233333');production.render(job);report=production.verify(job)
     scores=[]
     for t in (2.2,10,40,51.5,56.233333):

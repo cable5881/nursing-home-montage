@@ -58,7 +58,7 @@ def cutouts(job):
         # Frame rate conversion only. Audio, speech speed and pitch are untouched.
         normalized=folder/'presenter-cfr.mkv'
         run(['ffmpeg','-y','-v','error','-i',record['video'],'-t',a['duration'],'-vf','fps=30','-an','-c:v','ffv1',normalized])
-        run(['npx','--yes','hyperframes@0.9.44','remove-background',normalized,'-o',folder/'avatar-matte.mov','--device','auto','--json'],cwd=job)
+        run([*hyperframes_cli(job),'remove-background',normalized,'-o',folder/'avatar-matte.mov','--device','auto','--json'],cwd=job)
         run(['uv','run','--python','3.11',SKILL/'scripts/outline_presenter.py','--project',job,'--asset-dir',str(folder.relative_to(job)),'--min-seconds',str(max(.1,a['duration']-1/30))],cwd=job)
         c={'cacheKey':key,'file':str(target),'sha256':sha(target)};write(folder/'cutout-source.json',c);write(cache,c);results.append(str(target))
     compose(job);state(job,phase='composed',next='carve, check and inspect snapshots')
@@ -101,7 +101,7 @@ def require_cutouts(job):
     for a in read(job/'avatars.json'):
         if not (job/a['video']).is_file():raise RuntimeError('Missing requested presenter: '+a['id'])
 def check(job):
-    require_cutouts(job);r=run(['npm','run','check','--','--json'],cwd=job,check=False)
+    require_cutouts(job);r=run([*hyperframes_cli(job),'check','--json'],cwd=job,check=False)
     (job/'check.log').write_text(r.stdout+'\n'+r.stderr, encoding='utf-8')
     try:d=json.JSONDecoder().raw_decode(r.stdout[r.stdout.index('{'):])[0]
     except (ValueError,json.JSONDecodeError):raise RuntimeError('Check did not return JSON; see check.log')
@@ -114,13 +114,35 @@ def snapshot(job,times=None):
         points=[.6,total/2,total-1/30]
         for a in avatars:points.extend([a['start']+min(.6,a['duration']/2),a['start']+a['duration']/2])
         times=','.join(str(round(t,4)) for t in sorted(set(max(0,min(total-1/30,x)) for x in points)))
-    r=run(['npx','--yes','hyperframes@0.9.44','snapshot','--at',times,'--no-end','--output','qc-layout'],cwd=job)
+    r=run([*hyperframes_cli(job),'snapshot','--at',times,'--no-end','--output','qc-layout'],cwd=job)
     return {'output':str(job/'qc-layout'),'result':r.stdout[-2200:]}
+def contrast_review(job,frames,note):
+    c=read(job/'check.json');fingerprint=input_fingerprint(job)
+    if c.get('inputFingerprint')!=fingerprint:raise ValueError('Layout changed; run the complete check again')
+    if not note.strip() or not frames:raise ValueError('Actual layout frames and a concrete visual contrast finding are required')
+    errors=c.get('contrast',{}).get('errorCount',0)
+    if not errors or any(v.get('errorCount',0) for k,v in c.items() if isinstance(v,dict) and k not in ('contrast','visualContrastReview')):raise ValueError('Only reference-style contrast failures can receive this visual review; fix all other errors')
+    findings=[f for f in c['contrast'].get('findings',[]) if f.get('severity')=='error']
+    if not findings or any(f.get('code')!='contrast_aa_failure' for f in findings):raise ValueError('Unexpected contrast error; inspect it before continuing')
+    evidence=[]
+    for path in frames:
+        p=Path(path).resolve()
+        if not p.is_relative_to((job/'qc-layout').resolve()) or not p.is_file():raise ValueError('Use actual snapshots from this job/qc-layout')
+        evidence.append({'file':str(p),'sha256':sha(p)})
+    c['visualContrastReview']={'inputFingerprint':fingerprint,'frames':evidence,'findings':findings,'note':note,'fullCheckPassed':False,'referenceStyleRetained':True}
+    write(job/'check.json',c)
+    return {'renderAcceptedWithVisualContrastReview':True,'fullCheckPassed':False,'contrastErrorsRetained':errors}
+def accepted_check(job,c):
+    fingerprint=input_fingerprint(job)
+    if c.get('inputFingerprint')!=fingerprint:return False
+    if c.get('ok'):return True
+    review=c.get('visualContrastReview',{})
+    return review.get('inputFingerprint')==fingerprint and bool(review.get('frames')) and not any(v.get('errorCount',0) for k,v in c.items() if isinstance(v,dict) and k not in ('contrast','visualContrastReview'))
 def render(job):
     require_cutouts(job);c=read(job/'check.json') if (job/'check.json').exists() else {}
-    if not c.get('ok') or c.get('inputFingerprint')!=input_fingerprint(job):check(job)
+    if not accepted_check(job,c):check(job)
     cfg=settings(job);out=job/'renders/final.mp4';out.parent.mkdir(exist_ok=True)
-    r=run(['npm','run','render','--','--quality','delivery','--crf',str(cfg['render']['crf']),'--fps','30','--workers',str(cfg['render']['workers']),'--output',out],cwd=job,check=False)
+    r=run([*hyperframes_cli(job),'render','--quality','delivery','--crf',str(cfg['render']['crf']),'--fps','30','--workers',str(cfg['render']['workers']),'--output',out],cwd=job,check=False)
     (job/'render.log').write_text(r.stdout+'\n'+r.stderr, encoding='utf-8')
     if r.returncode:raise RuntimeError('Render failed; see render.log')
     state(job,phase='rendered',video=str(out),next='verify, inspect actual rendered frames, review')
@@ -137,7 +159,11 @@ def verify(job):
     lev=run(['ffmpeg','-hide_banner','-i',video,'-af','loudnorm=I=-17:TP=-1.5:LRA=11:print_format=json','-vn','-f','null','-']).stderr
     lev=json.loads(lev[lev.rfind('{'):lev.rfind('}')+1])
     if float(lev['input_tp'])>-1:raise RuntimeError('Audio peak too high')
-    black=run(['ffmpeg','-hide_banner','-i',video,'-vf','crop=1080:1028:0:478,blackdetect=d=0.06:pix_th=0.1:pic_th=0.98','-an','-f','null','-']).stderr
+    layout=read(job/'template-layout.json') if (job/'template-layout.json').exists() else {}
+    picture=layout.get('pictureOutput',[0,478,1080,1028])
+    # Inspect the clear footage, not the template's header/footer background.
+    px,py,pw,ph=picture;crop=[int(pw*.8)//2*2,int(min(ph*.8,900))//2*2,int(px+pw*.1)//2*2,int(py+(ph-min(ph*.8,900))/2)//2*2]
+    black=run(['ffmpeg','-hide_banner','-i',video,'-vf',f'crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]},blackdetect=d=0.06:pix_th=0.1:pic_th=0.98','-an','-f','null','-']).stderr
     events=[s for s in black.splitlines() if 'black_start:' in s]
     if events:raise RuntimeError('Black frames in actual footage: '+str(events))
     qc=job/'qc-final';qc.mkdir(exist_ok=True);times=[.6,total/2,total-1/30]
@@ -146,6 +172,10 @@ def verify(job):
     for i,t in enumerate(sorted(set(max(0,min(total-1/30,x)) for x in times))):
         out=qc/f'frame-{i:02}-{t:.3f}s.png';run(['ffmpeg','-y','-v','error','-ss',t,'-i',video,'-frames:v','1',out]);frames.append(str(out))
     report={'video':str(video),'sha256':sha(video),'duration':float(m['format']['duration']),'frames':round(total*30),'width':1080,'height':1920,'fps':30,'audio':lev,'tailAfterAudio':tail,'fullDecode':True,'centralFootageBlackEvents':events,'renderedReviewFrames':frames,'visualReviewPending':True,'humanListeningPerformed':False}
+    report['footageBlackCheckCrop']=crop;report['template']=layout.get('template','legacy-orange')
+    report['avatarWindows']=[{'id':a['id'],'start':a['start'],'end':a['start']+a['duration']} for a in read(job/'avatars.json')]
+    checks=read(job/'check.json');report['fullCompositionCheckPassed']=checks.get('ok',False)
+    if checks.get('visualContrastReview'):report['visualContrastReview']=checks['visualContrastReview']
     write(job/'verification.json',report);state(job,phase='verified_visual_review_pending',next='View renderedReviewFrames, then review')
     return report
 def review(job,frames,note):

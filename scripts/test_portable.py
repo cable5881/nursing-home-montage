@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11,<3.13"
-# dependencies = ["opencc-python-reimplemented==0.1.7", "pypinyin==0.55.0"]
+# dependencies = ["opencc-python-reimplemented==0.1.7", "pypinyin==0.55.0", "fonttools>=4.50,<5", "brotli>=1,<2"]
 # ///
 """Portable behaviour tests: no client assets, credentials or paid APIs."""
 import copy,json,os,tempfile,unittest
@@ -90,9 +90,99 @@ class PortableTests(unittest.TestCase):
     def test_source_quotation_validation(self):
         from workflow import validate_plan
         job=self.job();write(job/'inventory.json',{'files':[{'path':'facts.txt','kind':'text','text':'有阅读室。'},{'path':'v.mp4','kind':'video'}]})
-        plan={'institution':{'name':'测试机构','displayName':'测试机构','headline':'实地看养老'},'facts':[{'id':'a','source':'facts.txt','quote':'有阅读室。'}],'sentences':[{'text':'有阅读室。','factIds':['a'],'shots':[{'path':'v.mp4'}]}]}
+        plan={'settings':{'closing_hook':{'enabled':False}},'institution':{'name':'测试机构','displayName':'测试机构','headline':'实地看养老'},'facts':[{'id':'a','source':'facts.txt','quote':'有阅读室。'}],'sentences':[{'text':'有阅读室。','factIds':['a'],'shots':[{'path':'v.mp4'}]}]}
         write(job/'plan.json',plan);validate_plan(job);plan['facts'][0]['quote']='免费入住。';write(job/'plan.json',plan)
         with self.assertRaises(ValueError):validate_plan(job)
+
+    def test_closing_hook_requires_moving_footage_and_keeps_opening_only(self):
+        from workflow import validate_plan
+        self.people();job=self.job()
+        write(job/'inventory.json',{'files':[{'path':'v.mp4','kind':'video'},{'path':'p.jpg','kind':'image'}]})
+        plan={'institution':{'name':'测试机构','displayName':'测试机构','headline':'实地看养老'},'facts':[], 'sentences':[{'text':'先看居住空间。','kind':'hook','shots':[{'path':'v.mp4'}]}]}
+        write(job/'plan.json',plan)
+        with self.assertRaisesRegex(ValueError,'结尾需要'):validate_plan(job)
+        plan['sentences'].append({'text':'关注老师，想咨询参观，评论区留言养老服务。','kind':'cta','shots':[{'path':'p.jpg'}]})
+        write(job/'plan.json',plan)
+        with self.assertRaisesRegex(ValueError,'moving footage'):validate_plan(job)
+        plan['sentences'][-1]['shots']=[{'path':'v.mp4'}];write(job/'plan.json',plan);validate_plan(job)
+        self.assertEqual(settings(job)['avatar']['mode'],'opening')
+        self.assertEqual(settings(job)['template']['id'],'legacy-orange')
+
+    def test_template_switch_does_not_change_voice_person_or_connection(self):
+        self.people();job=self.job();before=settings(job)
+        write(job/'plan.json',{'settings':{'template':{'id':'green'}}});after=settings(job)
+        self.assertEqual(after['template']['id'],'green')
+        for key in ('voice','person','service'):self.assertEqual(before[key],after[key])
+
+    def test_ui_common_placement_is_lower_than_needed_but_never_obscured(self):
+        from platform_ui import lowest_box,audit
+        a={'screenshot_size':[1080,1920],'viewport':[0,0,1080,1920],'gap_px':20,'regions':[{'name':'bottom','rect':[0,1650,1080,1920]},{'name':'rail','rect':[950,900,1080,1800]}]}
+        b=copy.deepcopy(a);b['regions'][0]['rect'][1]=1750
+        common=lowest_box(750,280,[80,800,900,1920],{'a':a,'b':b})
+        individual=lowest_box(750,280,[80,800,900,1920],{'b':b})
+        self.assertEqual(common[3],1630);self.assertEqual(individual[3],1730)
+        self.assertTrue(all(not row['overlappingOrClippedLines'] for row in audit([common],{'a':a,'b':b})))
+
+    def test_ui_mapping_includes_crop_and_rejects_invalid_regions(self):
+        from platform_ui import native_regions,lowest_box
+        p={'screenshot_size':[1200,2600],'viewport':[0,100,1200,2400],'regions':[]}
+        m=native_regions(p);self.assertEqual(m['scale'],1.25);self.assertEqual(m['visible'][0],60)
+        p['regions']=[{'name':'bad','rect':[0,0,1300,2600]}]
+        with self.assertRaises(ValueError):native_regions(p)
+        with self.assertRaises(ValueError):lowest_box(1000,300,[100,100,900,1900],{})
+
+    def test_glyph_reflow_preserves_words_size_and_verified_split_times(self):
+        from caption_layout import Typography,reflow
+        from workflow import clean
+        spec=read(pc.SKILL/'assets/templates/fullscreen-orange.json')['caption']
+        font=Typography(pc.SKILL/'assets/NotoSansSC-Black.otf',None,spec)
+        text='服务包括二十四小时生活照料以及健康管理和康复护理';n=len(clean(text))
+        cue={'text':text,'lines':['服务包括24小时生活照料以及健康管理和康复护理'],'focus':'24小时','start':0,'end':n*.3,'duration':n*.3,'canonicalRange':[0,n]}
+        timing=[{'start':i*.3,'end':(i+1)*.3} for i in range(n)]
+        with self.assertRaisesRegex(ValueError,'verified character timing'):reflow([cue],font,clean)
+        cues,changes=reflow([cue],font,clean,timing)
+        self.assertGreater(len(cues),1);self.assertTrue(changes)
+        self.assertEqual(''.join(clean(c['text']) for c in cues),clean(text))
+        self.assertEqual(cues[0]['start'],0);self.assertEqual(cues[-1]['end'],cue['end'])
+        for a,b in zip(cues,cues[1:]):self.assertEqual(a['end'],b['start']);self.assertIn(b['start'],[t['start'] for t in timing])
+        for c in cues:
+            self.assertLessEqual(len(c['lines']),2)
+            self.assertTrue(all(font.fits(line,c.get('focus',''),j) for j,line in enumerate(c['lines'])))
+        self.assertTrue(any('24小时' in line for c in cues for line in c['lines']))
+        self.assertEqual(font.spec['font_size'],spec['font_size'])
+
+    def test_fullscreen_standard_compose_is_portable_and_repeatable(self):
+        import shutil
+        from build_job import compose
+        self.people();job=self.job();write(job/'plan.json',{'settings':{'template':{'id':'fullscreen-orange'}}})
+        (job/'assets/fonts').mkdir(parents=True)
+        shutil.copy2(pc.SKILL/'assets/NotoSansSC-Black.otf',job/'assets/fonts/NotoSansSC-Black.otf')
+        write(job/'orange-font-match.json',[{'family':'fixture','file':str(pc.SKILL/'assets/NotoSansSC-Black.otf'),'index':None,'angle':3,'tracking':4,'stroke':3}])
+        write(job/'institution.json',{'name':'测试机构','displayName':'测试机构','headline':'实地看养老'})
+        (job/'narration.txt').write_text('床边有沙发。',encoding='utf-8');(job/'source-description.txt').write_text('测试',encoding='utf-8')
+        write(job/'natural-timeline.json',{'duration':3,'voiceStart':0,'voiceDuration':3,'audio':'assets/voice.wav','outroStart':3,'outroDuration':0,'chapters':[[0,3,'居住空间']]})
+        write(job/'captions.json',[{'text':'床边有沙发','lines':['床边有','沙发'],'focus':'沙发','start':0,'end':3,'duration':3}])
+        write(job/'avatars.json',[]);write(job/'shot-list.json',[{'asset':'assets/room.mp4','start':0,'duration':3,'positionY':50,'description':'fixture footage','sourceStart':0}])
+        compose(job);first=(job/'index.html').read_bytes();caps=(job/'compositions/orange-captions.html').read_bytes()
+        self.assertEqual(read(job/'template-layout.json')['pictureOutput'],[0,0,1080,1920])
+        self.assertIn('测试机构',(job/'compositions/orange-ui.html').read_text())
+        self.assertFalse(read(job/'template-layout.json')['socialUIBurnedIn'])
+        compose(job);self.assertEqual(first,(job/'index.html').read_bytes());self.assertEqual(caps,(job/'compositions/orange-captions.html').read_bytes())
+
+    def test_missing_template_font_stops_before_freezing_or_paid_work(self):
+        from workflow import setup
+        self.people();job=self.job();write(job/'plan.json',{'settings':{'template':{'id':'green','overrides':{'fonts':{'title':{'file':str(self.root/'missing.ttc'),'index':2}}}}}})
+        with self.assertRaisesRegex(ValueError,'Template font is missing'):setup(job)
+        self.assertFalse((job/'runtime.json').exists())
+
+    def test_reference_contrast_review_cannot_hide_runtime_errors_or_changed_inputs(self):
+        import production
+        job=self.job();check={'ok':False,'inputFingerprint':'a','runtime':{'errorCount':0},'contrast':{'errorCount':1},'visualContrastReview':{'inputFingerprint':'a','frames':[{'file':'reviewed.png'}]}}
+        with patch('production.input_fingerprint',return_value='a'):
+            self.assertTrue(production.accepted_check(job,check))
+            check['runtime']['errorCount']=1;self.assertFalse(production.accepted_check(job,check))
+            check['runtime']['errorCount']=0
+        with patch('production.input_fingerprint',return_value='b'):self.assertFalse(production.accepted_check(job,check))
 
     def test_real_media_import_is_deduplicated_and_project_owned(self):
         import shutil

@@ -1,5 +1,8 @@
 {
   "version": 1,
+  "template": {"id": "legacy-orange", "overrides": {}},
+  "closing_hook": {"enabled": true},
+  "platform_ui": {"mode": "common", "profiles": {}},
   "video": {
     "width": 1080,
     "height": 1920,
@@ -14,7 +17,7 @@
     "target_lufs": -17
   },
   "avatar": {
-    "mode": "both",
+    "mode": "opening",
     "x": 48,
     "bottom": 1500,
     "width": 400,
