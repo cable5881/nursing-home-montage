@@ -1,0 +1,129 @@
+# /// script
+# requires-python = ">=3.11,<3.13"
+# dependencies = ["opencc-python-reimplemented==0.1.7", "pypinyin==0.55.0"]
+# ///
+"""All configured people x per-person counts, resumable and bounded by shared concurrency."""
+import argparse,csv,hashlib,json,os,shutil,sys
+from pathlib import Path
+import project_config as pc
+import people
+from workflow import inventory,validate_plan,read,write,run,sha
+
+def prepare(source,out,selection='all',count=1,counts=None):
+    if out.exists():raise ValueError('批次目录已存在，继续时使用start/run，不会覆盖。')
+    selected,missing=people.select(selection)
+    if not selected:raise ValueError('没有已配置完成的数字人；请先绑定/训练音色。')
+    assignments=[]
+    for person in selected:
+        n=(counts or {}).get(person['id'],(counts or {}).get(person['name'],count))
+        if not isinstance(n,int) or not 0<=n<=10000:raise ValueError('每人数量须为0到10000的整数。')
+        assignments.extend({'id':person['id']+f'-{i+1:03}','person':person['id'],'personName':person['name'],'number':i+1} for i in range(n))
+    if not assignments:raise ValueError('本批数量不能为0。')
+    inventory(source,out);(out/'plans').mkdir()
+    for i,row in enumerate(assignments):row['plan']=f'plans/{i+1:04}.json';row['job']=f'people/{row["person"]}/{row["number"]:03}';row['steps']=[];row['phase']='needs_plan'
+    data={'schema_version':1,'project':str(pc.root()),'source':str(Path(source).resolve()),'items':assignments,'excludedUnreadyPeople':missing,'phase':'needs_plans','max_active':2}
+    write(out/'batch.json',data);report(out)
+    return {'batch':str(out),'total':len(assignments),'people':len(selected),'excludedUnreadyPeople':missing,'next':'Agent reads material inventory and authors each listed plan; start validates all before any generation.'}
+
+def start(folder,reuse_scripts=False):
+    data=read(folder/'batch.json');seen=set();prepared=[]
+    # Validate the whole batch before starting any paid work.
+    for row in data['items']:
+        plan_path=folder/row['plan']
+        if not plan_path.is_file():raise ValueError('缺少内部编排方案：'+row['plan'])
+        plan=read(plan_path);plan['person']=row['person'];person=pc.person(row['person'],ready=True)
+        job=folder/row['job'];job.mkdir(parents=True,exist_ok=True)
+        if (job/'plan.json').exists() and read(job/'plan.json')!=plan:raise ValueError('已启动的任务文案被修改，请新建批次。')
+        write(job/'plan.json',plan)
+        for f in ('inventory.json','source-text.txt'):shutil.copy2(folder/f,job/f)
+        validate_plan(job)
+        content='\n'.join(s['text'] for s in plan['sentences']);h=hashlib.sha256(content.encode()).hexdigest()
+        if h in seen and not reuse_scripts:raise ValueError('本批存在相同文案；默认每条不同，明确允许共享脚本时才使用--reuse-scripts。')
+        seen.add(h);prepared.append((row,job))
+    for row,job in prepared:
+        pc.freeze(job);row['phase']='ready' if row['phase']=='needs_plan' else row['phase']
+    data['phase']='ready';data['reuse_scripts']=reuse_scripts;write(folder/'batch.json',data);report(folder)
+    return {'ready':True,'total':len(data['items']),'uniqueScripts':len(seen),'paidCalls':0}
+
+STEPS=['setup','voice','build','avatars','provider-review','cutouts','carve','check','snapshot','render','verify','final-review']
+def invoke(job,action,extra=None):
+    runtime=read(job/'runtime.json');script=Path(runtime['engine'])/'scripts/montage.py'
+    args=['uv','run','--python','3.11',script,action,job]+(extra or [])
+    if action=='setup':args+=['--install']
+    if action=='avatars':args+=['--wait-seconds','0']
+    env=os.environ.copy();env['MONTAGE_PROJECT_ROOT']=runtime['project']
+    result=run(args,env=env,check=False)
+    try:payload=json.loads(result.stdout)
+    except ValueError:payload={'error':'阶段未返回有效JSON，请查看任务日志。'}
+    return result.returncode,payload
+
+def tick(folder,limit=4,retry_failed=False):
+    data=read(folder/'batch.json');processed=0
+    if data['phase']=='needs_plans':raise ValueError('先完成所有内部plan并运行start。')
+    active=sum(r['phase']=='pending' for r in data['items'])
+    for row in data['items']:
+        if processed>=limit:break
+        if row['phase'] in ('complete','provider_review','final_review'):continue
+        if row['phase']=='failed' and not retry_failed:continue
+        if row['phase']!='pending' and active>=data['max_active']:continue
+        was_pending=row['phase']=='pending';job=folder/row['job'];processed+=1
+        for step in STEPS:
+            if step in row['steps']:continue
+            if step=='provider-review':
+                # No avatars mode needs no provider review.
+                if not read(job/'avatars.json'):row['steps'].append(step);continue
+                row['phase']='provider_review';break
+            if step=='final-review':row['phase']='final_review';break
+            code,result=invoke(job,step);row['lastResult']=result
+            if code==2 or result.get('pending'):
+                row['phase']='pending'
+                if not was_pending:active+=1
+                break
+            if code:
+                row['phase']='failed'
+                if was_pending:active-=1;was_pending=False
+                break
+            row['steps'].append(step)
+            if step=='avatars' and was_pending:active-=1;was_pending=False
+        if row['phase']=='provider_review' and was_pending:active-=1
+        write(folder/'batch.json',data)
+    data['phase']='complete' if all(r['phase']=='complete' for r in data['items']) else 'in_progress'
+    write(folder/'batch.json',data);return report(folder)
+
+def reviewed(folder,identifier,frames,note,provider=False):
+    data=read(folder/'batch.json');row=next(r for r in data['items'] if r['id']==identifier);job=folder/row['job']
+    if row['phase']!=('provider_review' if provider else 'final_review'):raise ValueError('此条任务当前不处于对应复核阶段。')
+    action='review-provider' if provider else 'review';code,result=invoke(job,action,['--frames',*frames,'--note',note])
+    if code:raise ValueError(result)
+    row['steps'].append('provider-review' if provider else 'final-review');row['phase']='ready' if provider else 'complete';row['lastResult']=result
+    if not provider:row['delivery']=str((job/'final.mp4').resolve())
+    data['phase']='complete' if all(r['phase']=='complete' for r in data['items']) else 'in_progress'
+    write(folder/'batch.json',data);return report(folder)
+
+def report(folder):
+    data=read(folder/'batch.json');summary={}
+    for r in data['items']:summary[r['phase']]=summary.get(r['phase'],0)+1
+    with (folder/'交付清单.csv').open('w',encoding='utf-8-sig',newline='') as f:
+        writer=csv.writer(f);writer.writerow(['任务','数字人','序号','状态','成片'])
+        for r in data['items']:writer.writerow([r['id'],r['personName'],r['number'],r['phase'],r.get('delivery','')])
+    return {'batch':str(folder),'total':len(data['items']),'summary':summary,'manifest':str(folder/'交付清单.csv'),'reviewNeeded':[{'id':r['id'],'phase':r['phase'],'job':str(folder/r['job'])} for r in data['items'] if r['phase'] in ('provider_review','final_review')],'excludedUnreadyPeople':data['excludedUnreadyPeople']}
+
+def main():
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--project',type=Path);s=p.add_subparsers(dest='action',required=True)
+    q=s.add_parser('prepare');q.add_argument('input',type=Path);q.add_argument('--out',type=Path,required=True);q.add_argument('--people',default='all');q.add_argument('--per-person',type=int,default=1);q.add_argument('--counts',type=Path)
+    for a in ('start','run','status','review-provider','review'):
+        q=s.add_parser(a);q.add_argument('folder',type=Path)
+        if a=='start':q.add_argument('--reuse-scripts',action='store_true')
+        if a=='run':q.add_argument('--limit',type=int,default=4);q.add_argument('--retry-failed',action='store_true')
+        if a in ('review','review-provider'):q.add_argument('--item',required=True);q.add_argument('--frames',nargs='+',required=True);q.add_argument('--note',required=True)
+    args=p.parse_args()
+    if args.project:os.environ['MONTAGE_PROJECT_ROOT']=str(args.project.resolve())
+    if args.action=='prepare':return prepare(args.input,args.out.resolve(),args.people,args.per_person,read(args.counts) if args.counts else None)
+    folder=args.folder.resolve();os.environ.setdefault('MONTAGE_PROJECT_ROOT',read(folder/'batch.json')['project'])
+    if args.action=='start':return start(folder,args.reuse_scripts)
+    if args.action=='run':return tick(folder,args.limit,args.retry_failed)
+    if args.action=='status':return report(folder)
+    return reviewed(folder,args.item,args.frames,args.note,args.action=='review-provider')
+if __name__=='__main__':
+    try:print(json.dumps(main(),ensure_ascii=False,indent=2))
+    except Exception as e:print(json.dumps({'error':str(e)},ensure_ascii=False));sys.exit(1)

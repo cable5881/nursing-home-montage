@@ -1,0 +1,160 @@
+from pathlib import Path
+from html.parser import HTMLParser
+import json,sys
+from workflow import *
+from build_job import compose
+
+def avatars(job,wait_seconds=45):
+    setup(job);cfg=settings(job);pending=[];completed=[]
+    for a in read(job/'avatars.json'):
+        audio=job/a['audio'];e=read(job/'avatar-engine.json');portrait=Path(e['image'])
+        key=digest({'pcm':pcm_sha(audio),'portrait':sha(portrait),'avatar':e['avatar'],'resource':e['avatar']['req_key'],'connection':cfg.get('person',{}).get('connection'),'project':str(project_root())})
+        cache=project_root()/'作品/.montage-cache/avatar'/f'{key}.json'
+        run_dir=job/'runs'/('avatar-'+a['id']);record_path=job/'assets'/('avatar-'+a['id'])/'generation-source.json'
+        if record_path.exists():
+            record=read(record_path)
+            if record['cacheKey']!=key:raise RuntimeError('Avatar driver/config changed; use a new job version')
+            if Path(record['video']).exists() and sha(record['video'])==record['videoSha256']:
+                completed.append(a['id']);continue
+        if cache.exists() and not run_dir.exists():
+            c=read(cache)
+            if Path(c['video']).exists() and sha(c['video'])==c['videoSha256']:
+                write(record_path,c);completed.append(a['id']);continue
+        if run_dir.exists():
+            s=read(run_dir/'run.json')
+            if s['text']!=a['text']:raise RuntimeError('Avatar text changed; use a new version')
+            r=engine(job,['resume',run_dir,'--wait-seconds',str(wait_seconds)],service='avatar')
+        else:
+            r=engine(job,['generate','--text',a['text'],'--reuse-audio',audio,'--out',run_dir,'--wait-seconds',str(wait_seconds)],service='avatar')
+        if r.returncode==3:
+            s=read(run_dir/'run.json');check=align_audio(Path(s['tts']['file']),a['text'],run_dir,cfg)
+            r=engine(job,['review',run_dir,'--note','Independent medium model phoneme check passed; no human listening claimed.','--evidence',run_dir/'alignment-check.json'],service='avatar')
+            if r.returncode:raise RuntimeError(r.stdout)
+            r=engine(job,['resume',run_dir,'--wait-seconds',str(wait_seconds)],service='avatar')
+        if r.returncode==2:
+            s=read(run_dir/'run.json');pending.append({'id':a['id'],'taskId':s.get('task_id'),'run':str(run_dir)})
+            # One bounded cloud wait per command. Resume never creates another task for this id.
+            break
+        if r.returncode:raise RuntimeError(r.stdout[-2200:]+r.stderr[-1200:])
+        s=read(run_dir/'run.json');v=s['verification'];record={'cacheKey':key,'video':v['output'],'videoSha256':v['sha256'],'taskId':s['task_id'],'run':str(run_dir),'alignment':v['alignment'],'driverPcmSha256':pcm_sha(audio),'visualReviewFrames':v['visual_review_frames'],'visualReviewPending':True}
+        write(record_path,record);write(cache,record);completed.append(a['id'])
+    state(job,phase='avatars_pending' if pending else 'avatars_ready',pending=pending,next='avatars' if pending else 'Inspect provider frames, then cutouts')
+    return {'completed':completed,'pending':pending}
+
+def cutouts(job):
+    results=[]
+    for a in read(job/'avatars.json'):
+        target=job/a['video'];folder=target.parent;record=read(folder/'generation-source.json')
+        if sha(record['video'])!=record['videoSha256']:raise RuntimeError('Generated video changed after verification')
+        key=digest({'video':record['videoSha256'],'outlineScript':sha(SKILL/'scripts/outline_presenter.py'),'matte':'u2net_human_seg','size':[320,440]})
+        cache=project_root()/'作品/.montage-cache/cutout'/f'{key}.json'
+        previous=read(folder/'cutout-source.json') if (folder/'cutout-source.json').exists() else {}
+        if target.exists() and previous.get('cacheKey')==key and previous.get('sha256')==sha(target):
+            results.append(str(target));continue
+        if cache.exists():
+            c=read(cache)
+            if Path(c['file']).exists() and sha(c['file'])==c['sha256']:
+                copy_asset(c['file'],target);write(folder/'cutout-source.json',c);results.append(str(target));continue
+        # Frame rate conversion only. Audio, speech speed and pitch are untouched.
+        normalized=folder/'presenter-cfr.mkv'
+        run(['ffmpeg','-y','-v','error','-i',record['video'],'-t',a['duration'],'-vf','fps=30','-an','-c:v','ffv1',normalized])
+        run(['npx','--yes','hyperframes@0.9.44','remove-background',normalized,'-o',folder/'avatar-matte.mov','--device','auto','--json'],cwd=job)
+        run(['uv','run','--python','3.11',SKILL/'scripts/outline_presenter.py','--project',job,'--asset-dir',str(folder.relative_to(job)),'--min-seconds',str(max(.1,a['duration']-1/30))],cwd=job)
+        c={'cacheKey':key,'file':str(target),'sha256':sha(target)};write(folder/'cutout-source.json',c);write(cache,c);results.append(str(target))
+    compose(job);state(job,phase='composed',next='carve, check and inspect snapshots')
+    return {'cutouts':results}
+
+def review_provider(job,frames,note):
+    if not frames or not note.strip():raise ValueError('请提供实际看过的接口原片帧及具体观察。')
+    for a in read(job/'avatars.json'):
+        path=job/'assets'/('avatar-'+a['id'])/'generation-source.json';record=read(path)
+        known={str(Path(p).resolve()) for p in record['visualReviewFrames']}
+        selected=[str(Path(p).resolve()) for p in frames if str(Path(p).resolve()) in known]
+        if not selected:raise ValueError('每个首尾数字人都需至少一张实际原片帧：'+a['id'])
+        if sha(record['video'])!=record['videoSha256']:raise ValueError('原片已变化，需重新核验。')
+        record.update(visualReviewPending=False,visualReview={'frames':selected,'note':note,'sha256':record['videoSha256']})
+        write(path,record);write(project_root()/'作品/.montage-cache/avatar'/f'{record["cacheKey"]}.json',record)
+    return {'providerReviewRecorded':True}
+
+def carve(job):
+    if not read(job/'bgm-timeline.json').get('enabled'):return {'skipped':'no music configured'}
+    run(['node',SKILL/'scripts/carve.mjs','--comp',job/'index.html','--bed','music-bed','--voice','female-narration','--strength',str(settings(job)['music']['carve_strength']),'--core',job])
+    bgm=read(job/'bgm-timeline.json')
+    class Parser(HTMLParser):
+        def handle_starttag(self,tag,attrs):
+            attrs=dict(attrs)
+            if tag=='audio' and attrs.get('id')=='music-bed':
+                for key in ('data-fx-chain','data-automation','data-fx-carve'):
+                    if key in attrs:bgm[key]=json.loads(attrs[key])
+    Parser().feed((job/'index.html').read_text());write(job/'bgm-timeline.json',bgm)
+    return {'carveSaved':True}
+def input_fingerprint(job):
+    # Bind checks to the actual HTML and every locally referenced media/font; no mtime approvals.
+    files=list((job/'compositions').glob('*.html'))+[job/'index.html']
+    import re,html
+    content=''.join(p.read_text() for p in files)
+    for path in set(re.findall(r'(?:src|href)=[\"\x27](assets/[^\"\x27]+)',content)+re.findall(r'url\([\"\x27]?(assets/[^\"\x27\)]+)',content)):
+        p=job/html.unescape(path)
+        if p.is_file():files.append(p)
+    return digest({str(p.relative_to(job)):sha(p) for p in files})
+def require_cutouts(job):
+    for a in read(job/'avatars.json'):
+        if not (job/a['video']).is_file():raise RuntimeError('Missing requested presenter: '+a['id'])
+def check(job):
+    require_cutouts(job);r=run(['npm','run','check','--','--json'],cwd=job,check=False)
+    (job/'check.log').write_text(r.stdout+'\n'+r.stderr)
+    try:d=json.JSONDecoder().raw_decode(r.stdout[r.stdout.index('{'):])[0]
+    except (ValueError,json.JSONDecodeError):raise RuntimeError('Check did not return JSON; see check.log')
+    d['inputFingerprint']=input_fingerprint(job);write(job/'check.json',d)
+    if r.returncode or not d.get('ok'):raise RuntimeError('Composition check failed; inspect check.json')
+    return {'ok':True,'warnings':{k:v.get('warningCount') for k,v in d.items() if isinstance(v,dict) and v.get('warningCount')}}
+def snapshot(job,times=None):
+    total=read(job/'natural-timeline.json')['duration'];avatars=read(job/'avatars.json')
+    if not times:
+        points=[.6,total/2,total-1/30]
+        for a in avatars:points.extend([a['start']+min(.6,a['duration']/2),a['start']+a['duration']/2])
+        times=','.join(str(round(t,4)) for t in sorted(set(max(0,min(total-1/30,x)) for x in points)))
+    r=run(['npx','--yes','hyperframes@0.9.44','snapshot','--at',times,'--no-end','--output','qc-layout'],cwd=job)
+    return {'output':str(job/'qc-layout'),'result':r.stdout[-2200:]}
+def render(job):
+    require_cutouts(job);c=read(job/'check.json') if (job/'check.json').exists() else {}
+    if not c.get('ok') or c.get('inputFingerprint')!=input_fingerprint(job):check(job)
+    cfg=settings(job);out=job/'renders/final.mp4';out.parent.mkdir(exist_ok=True)
+    r=run(['npm','run','render','--','--quality','delivery','--crf',str(cfg['render']['crf']),'--fps','30','--workers',str(cfg['render']['workers']),'--output',out],cwd=job,check=False)
+    (job/'render.log').write_text(r.stdout+'\n'+r.stderr)
+    if r.returncode:raise RuntimeError('Render failed; see render.log')
+    state(job,phase='rendered',video=str(out),next='verify, inspect actual rendered frames, review')
+    return {'video':str(out)}
+def verify(job):
+    video=job/'renders/final.mp4';timeline=read(job/'natural-timeline.json');total=timeline['duration'];m=probe(video)
+    v=next(s for s in m['streams'] if s['codec_type']=='video')
+    if (v['width'],v['height'],v['r_frame_rate'])!=(1080,1920,'30/1') or abs(float(m['format']['duration'])-total)>.015:raise RuntimeError('Final video dimensions/rate/duration differ from the composition')
+    if int(v.get('nb_frames',round(total*30)))!=round(total*30):raise RuntimeError('Unexpected video frame count')
+    run(['ffmpeg','-v','error','-i',video,'-f','null','-'])
+    if sha(job/timeline['rawAudio'])!=timeline['rawAudioSha256'] or sha(job/timeline['audio'])!=timeline['audioSha256']:raise RuntimeError('Voice was changed after timing')
+    tail=total-(timeline['voiceStart']+timeline['voiceDuration'])
+    if not 0<=tail<1/30+.000001:raise RuntimeError('Unrequested tail padding or clipped narration')
+    lev=run(['ffmpeg','-hide_banner','-i',video,'-af','loudnorm=I=-17:TP=-1.5:LRA=11:print_format=json','-vn','-f','null','-']).stderr
+    lev=json.loads(lev[lev.rfind('{'):lev.rfind('}')+1])
+    if float(lev['input_tp'])>-1:raise RuntimeError('Audio peak too high')
+    black=run(['ffmpeg','-hide_banner','-i',video,'-vf','crop=1080:1028:0:478,blackdetect=d=0.06:pix_th=0.1:pic_th=0.98','-an','-f','null','-']).stderr
+    events=[s for s in black.splitlines() if 'black_start:' in s]
+    if events:raise RuntimeError('Black frames in actual footage: '+str(events))
+    qc=job/'qc-final';qc.mkdir(exist_ok=True);times=[.6,total/2,total-1/30]
+    for a in read(job/'avatars.json'):times.extend([a['start']+min(.6,a['duration']/2),a['start']+a['duration']/2,a['start']+a['duration']-1/30])
+    frames=[]
+    for i,t in enumerate(sorted(set(max(0,min(total-1/30,x)) for x in times))):
+        out=qc/f'frame-{i:02}-{t:.3f}s.png';run(['ffmpeg','-y','-v','error','-ss',t,'-i',video,'-frames:v','1',out]);frames.append(str(out))
+    report={'video':str(video),'sha256':sha(video),'duration':float(m['format']['duration']),'frames':round(total*30),'width':1080,'height':1920,'fps':30,'audio':lev,'tailAfterAudio':tail,'fullDecode':True,'centralFootageBlackEvents':events,'renderedReviewFrames':frames,'visualReviewPending':True,'humanListeningPerformed':False}
+    write(job/'verification.json',report);state(job,phase='verified_visual_review_pending',next='View renderedReviewFrames, then review')
+    return report
+def review(job,frames,note):
+    report=read(job/'verification.json');video=Path(report['video'])
+    if sha(video)!=report['sha256']:raise RuntimeError('Render changed; verify and inspect it again')
+    if not note.strip() or not frames:raise ValueError('Record actual inspected frames and concrete findings')
+    known=set(report['renderedReviewFrames'])
+    if any(str(Path(p).resolve()) not in known for p in frames):raise ValueError('Review evidence must be from this verified render')
+    report.update(visualReviewPending=False,visualReview={'frames':frames,'note':note,'videoSha256':report['sha256']});write(job/'verification.json',report)
+    final=job/'final.mp4';copy_asset(video,final)
+    state(job,phase='complete',video=str(final),sha256=report['sha256'],next='Deliver final.mp4 to the user')
+    return {'video':str(final),'duration':report['duration'],'sha256':report['sha256']}

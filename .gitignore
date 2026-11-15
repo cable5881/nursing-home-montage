@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.DS_Store
+.montage/
+.env
+.env.*
+node_modules/
+runs/
+renders/
+*.mp4
+*.wav
+*.mp3

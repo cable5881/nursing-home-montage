@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "video": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30
+  },
+  "voice": {
+    "speaker": null,
+    "resource_id": "seed-icl-2.0",
+    "model": "seed-tts-2.0-standard",
+    "speech_rate": -3,
+    "start": 0.3,
+    "target_lufs": -17
+  },
+  "avatar": {
+    "mode": "both",
+    "x": 48,
+    "bottom": 1500,
+    "width": 400,
+    "height": 550,
+    "fade_in": 0.18,
+    "fade_out": 0.16,
+    "sentence_padding": 0.1
+  },
+  "music": {
+    "resource": null,
+    "static_gain_db": -19.47,
+    "speech_gain_db": 5.583624920952497,
+    "carve_strength": 0.8,
+    "fade_in": 0.4,
+    "fade_out": 0.24,
+    "enabled": false
+  },
+  "render": {
+    "cli_version": "0.9.44",
+    "crf": 14,
+    "workers": 4
+  },
+  "alignment": {
+    "model": "medium",
+    "local_cache": ".cache/nursing-home-montage/models/medium",
+    "threads": 6
+  },
+  "typography": {
+    "body_font": null,
+    "collection_index": null,
+    "reference_asset": null,
+    "reference_identity": null
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "image": "",
+  "output_dir": "runs",
+  "credentials_file": "",
+  "tts": {
+    "endpoint": "https://openspeech.bytedance.com/api/v3/tts/unidirectional",
+    "speaker": "",
+    "resource_id": "seed-icl-2.0",
+    "model": "seed-tts-2.0-standard",
+    "speech_rate": 0,
+    "sample_rate": 24000,
+    "bit_rate": 160000,
+    "pronunciation_dict": {
+      "tone": [
+        "生活/(sheng1)(huo2)",
+        "再忙/(zai4)(mang2)",
+        "读几页书/(du2)(ji3)(ye4)(shu1)"
+      ]
+    }
+  },
+  "avatar": {
+    "req_key": "realman_avatar_picture_omni20_cvtob",
+    "enable_watermark": true,
+    "prompt": "固定机位，正面中景。人物以平静、克制的日常交谈状态对镜头说话，目光柔和稳定，眼睑自然放松，眉毛平稳，偶尔轻缓眨眼。双唇和下颌随音节自然开合，动作幅度克制，停顿时双唇轻合，保持淡淡微笑。头颈和肩部稳定放松，双手安放在腿上。"
+  },
+  "storage": {
+    "bucket": "",
+    "region": "cn-beijing",
+    "endpoint": "tos-cn-beijing.volces.com",
+    "prefix": "nursing-home-montage",
+    "url_expires_seconds": 14400
+  },
+  "verification": {
+    "asr_model": "base",
+    "language": "zh",
+    "cpu_threads": 4,
+    "max_tail_padding_seconds": 2.0,
+    "max_tts_revisions": 2
+  }
+}
