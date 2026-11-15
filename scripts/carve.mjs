@@ -34,7 +34,7 @@ let allocated={version:1,nodes:[...kept]};
 function add(node){const n={...node,id:effects.mintAudioFxNodeId(allocated),fromCarve:true};allocated.nodes.push(n);return n;}
 const filters=bands.map(b=>add(analysis.carveBandsToChain([b]).nodes[0]));
 const gain=duck.length?add({type:'gain',enabled:true,params:{...effects.defaultAudioFxParams('gain'),gain:0}}):null;
-function lane(node,points){const timed=points.map(p=>({t:Number(p.t.toFixed(3)),v:p.v})).filter(p=>p.t>=0);if((timed[0]?.t??0)>0)timed.unshift({t:0,v:0});return timed.length>1?[{target:'fx.'+node.id+'.gain',points:timed}]:[];}
+function lane(node,points){const timed=points.map(p=>({t:Number(p.t.toFixed(3)),v:p.v})).filter(p=>p.t>=0&&p.t<=Number(attr(bedTag,'data-duration')));if((timed[0]?.t??0)>0)timed.unshift({t:0,v:0});return timed.length>1?[{target:'fx.'+node.id+'.gain',points:timed}]:[];}
 const generated=analysis.analyseCarveDynamics(voice,rate,bands).flatMap((b,i)=>lane(filters[i],b.points));
 if(gain)generated.push(...lane(gain,duck));
 const previous=attr(bedTag,'data-automation')?JSON.parse(attr(bedTag,'data-automation')).lanes:[];
