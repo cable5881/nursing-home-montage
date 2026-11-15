@@ -5,16 +5,16 @@ from fontTools.pens.boundsPen import BoundsPen
 from fontTools.pens.transformPen import TransformPen
 from fontTools import subset
 ROOT=Path(sys.argv[1]).resolve() if len(sys.argv)>1 else Path.cwd()
-NATURAL=json.loads((ROOT/'natural-timeline.json').read_text())
+NATURAL=json.loads((ROOT/'natural-timeline.json').read_text(encoding='utf-8'))
 TOTAL=NATURAL['duration']
 OUTRO_START=NATURAL['outroStart'];OUTRO_DURATION=NATURAL['outroDuration']
 def esc(s):return html.escape(str(s),quote=True)
-match=json.loads((ROOT/'orange-font-match.json').read_text())[0]
+match=json.loads((ROOT/'orange-font-match.json').read_text(encoding='utf-8'))[0]
 body=TTFont(match['file'],fontNumber=match['index'])
 chapter=TTFont(ROOT/'assets/fonts/NotoSansSC-Black.otf')
 fonts={'OrangeRounded':body,'OrangeLabel':chapter}
-institution=json.loads((ROOT/'institution.json').read_text())
-text=(ROOT/'source-description.txt').read_text()+(ROOT/'narration.txt').read_text()+''.join(institution.get(k,'') for k in ('name','displayName','headline'))+"实地探访分区照护居住空间花园环境阅读书画活动空间日常服务文娱活动膳食服务托养服务给长辈选养老院先看再看安排床边有沙发日常休息也方便0123456789 ·"
+institution=json.loads((ROOT/'institution.json').read_text(encoding='utf-8'))
+text=(ROOT/'source-description.txt').read_text(encoding='utf-8')+(ROOT/'narration.txt').read_text(encoding='utf-8')+''.join(institution.get(k,'') for k in ('name','displayName','headline'))+"实地探访分区照护居住空间花园环境阅读书画活动空间日常服务文娱活动膳食服务托养服务给长辈选养老院先看再看安排床边有沙发日常休息也方便0123456789 ·"
 text+=''.join(str(row[2]) for row in NATURAL['chapters'])
 for family,src,index in [('OrangeRounded',match['file'],match['index']),('OrangeLabel',str(ROOT/'assets/fonts/NotoSansSC-Black.otf'),None)]:
  out=ROOT/f'assets/fonts/{family}.woff2'
@@ -49,7 +49,7 @@ def caption_line(text,focus,line,ident):
   content=esc(before)+f'<tspan id="focus-{ident}" fill="#FDD722" stroke="#FDD722" font-size="{112*FOCUS}">'+esc(active)+'</tspan>'+esc(after)
  col='#FA98C3' if is_pink else '#FFFFFF'
  return f'<g transform="matrix({sx:.8f} 0 {-sx*K:.8f} {sy:.8f} {tx:.6f} {base:.6f})"><text id="text-{ident}" x="0" y="0" font-family="OrangeRounded" font-weight="700" font-size="112" letter-spacing="{TRACK}" fill="{col}" stroke="{col}" stroke-width="{THICK*2}" stroke-linecap="round" stroke-linejoin="round" paint-order="stroke fill">{content}</text></g>'
-cues=json.loads((ROOT/'captions.json').read_text())
+cues=json.loads((ROOT/'captions.json').read_text(encoding='utf-8'))
 chapters=[tuple(row) for row in NATURAL['chapters']]
 def svg(content):
  return '<svg class="orange-layout" viewBox="0 0 916 1717" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">'+content+'</svg>'
@@ -82,8 +82,8 @@ for i,c in enumerate(cues):
 caps='<template><style>'+CSS+'</style><div id="root" data-composition-id="orange-captions" data-width="1080" data-height="1920">'+svg(''.join(groups))+'</div><script>const tl=gsap.timeline({paused:true});'+''.join(anims)+'window.__timelines["orange-captions"]=tl;</script></template>'
 ui=ui.replace('data-start="57.2" data-duration="2.8"',f'data-start="{OUTRO_START}" data-duration="{OUTRO_DURATION}"').replace(',57.2);',f',{OUTRO_START});')
 (ROOT/'compositions').mkdir(exist_ok=True)
-(ROOT/'compositions/orange-ui.html').write_text(ui);(ROOT/'compositions/orange-captions.html').write_text(caps)
-shots=json.loads((ROOT/'shot-list.json').read_text())
+(ROOT/'compositions/orange-ui.html').write_text(ui, encoding='utf-8');(ROOT/'compositions/orange-captions.html').write_text(caps, encoding='utf-8')
+shots=json.loads((ROOT/'shot-list.json').read_text(encoding='utf-8'))
 media=[]
 for i,s in enumerate(shots):
  common=f'id="shot-{i:02d}" class="clip footage" src="{s["asset"]}" data-start="{s["start"]}" data-duration="{s["duration"]}" data-track-index="0" style="z-index:{i+1};object-position:50% {s["positionY"]}%" data-beat="{esc(s["description"])}"'
@@ -93,7 +93,7 @@ for i,s in enumerate(shots):
 videos='\n'.join(media)
 # Music mixing is stored beside the composition so regeneration keeps the exact mix.
 bgm_path=ROOT/'bgm-timeline.json'
-BGM=json.loads(bgm_path.read_text()) if bgm_path.exists() else None
+BGM=json.loads(bgm_path.read_text(encoding='utf-8')) if bgm_path.exists() else None
 music=''
 if BGM and BGM.get('enabled'):
  attrs={'id':'music-bed','class':'clip','src':BGM['audio'],'data-start':0,'data-duration':TOTAL,'data-volume':1,'data-track-index':4}
@@ -104,7 +104,7 @@ if BGM and BGM.get('enabled'):
 top=428*1920/1717;height=919*1920/1717
 avatar='';avatar_anim=''
 avatar_path=ROOT/'avatars.json'
-avatars=json.loads(avatar_path.read_text()) if avatar_path.exists() else [json.loads((ROOT/'avatar-opening.json').read_text())]
+avatars=json.loads(avatar_path.read_text(encoding='utf-8')) if avatar_path.exists() else [json.loads((ROOT/'avatar-opening.json').read_text(encoding='utf-8'))]
 for n,A in enumerate(avatars):
  if (ROOT/A['video']).exists():
   ident=A.get('id',str(n))
@@ -122,9 +122,9 @@ index=f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta na
 <audio id="female-narration" class="clip" src="{NATURAL['audio']}" data-start="{NATURAL['voiceStart']}" data-duration="{NATURAL['voiceDuration']}" data-volume="1" data-track-index="3"></audio>
 {music}
 </div><script>const mainTL=gsap.timeline({{paused:true}});{avatar_anim}window.__timelines["main"]=mainTL;</script></body></html>'''
-(ROOT/'index.html').write_text(index)
-(ROOT/'captions-orange.json').write_text(json.dumps(cues,ensure_ascii=False,indent=2))
-(ROOT/'orange-typography.json').write_text(json.dumps({'referenceCanvas':[916,1717],'output':[1080,1920],'headerRegion':[0,0,916,428],'pictureRegion':[0,428,916,919],'chapterRegion':[33,454,228,64],'captionWhiteBox':white_box,'captionPinkBox':pink_box,'captionBaselines':[BASE_W,BASE_P],'whiteScale':[WSX,WSY],'pinkScale':[PSX,PSY],'focusRatio':FOCUS,'colors':{'white':'#FFFFFF','pink':'#FA98C3','yellow':'#FDD722'},'font':match},ensure_ascii=False,indent=2))
+(ROOT/'index.html').write_text(index, encoding='utf-8')
+(ROOT/'captions-orange.json').write_text(json.dumps(cues,ensure_ascii=False,indent=2), encoding='utf-8')
+(ROOT/'orange-typography.json').write_text(json.dumps({'referenceCanvas':[916,1717],'output':[1080,1920],'headerRegion':[0,0,916,428],'pictureRegion':[0,428,916,919],'chapterRegion':[33,454,228,64],'captionWhiteBox':white_box,'captionPinkBox':pink_box,'captionBaselines':[BASE_W,BASE_P],'whiteScale':[WSX,WSY],'pinkScale':[PSX,PSY],'focusRatio':FOCUS,'colors':{'white':'#FFFFFF','pink':'#FA98C3','yellow':'#FDD722'},'font':match},ensure_ascii=False,indent=2), encoding='utf-8')
 print(json.dumps({'font':match['family'],'whiteScale':[WSX,WSY],'pinkScale':[PSX,PSY],'baselines':[BASE_W,BASE_P],'videoBand':[top,height]},ensure_ascii=False))
 
 fit=[]
@@ -135,5 +135,5 @@ for c in cues:
   width=(b[2]-b[0])*sx
   fit.append({'text':line,'widthRef':round(width,2),'marginRef':round((916-width)/2,2)})
   assert width<=836,(line,width)
-(ROOT/'caption-fit.json').write_text(json.dumps(fit,ensure_ascii=False,indent=2))
+(ROOT/'caption-fit.json').write_text(json.dumps(fit,ensure_ascii=False,indent=2), encoding='utf-8')
 print('MAX_CAPTION_WIDTH_REF',max(x['widthRef'] for x in fit))

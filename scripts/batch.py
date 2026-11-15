@@ -125,5 +125,6 @@ def main():
     if args.action=='status':return report(folder)
     return reviewed(folder,args.item,args.frames,args.note,args.action=='review-provider')
 if __name__=='__main__':
+    if hasattr(sys.stdout,'reconfigure'):sys.stdout.reconfigure(encoding='utf-8')
     try:print(json.dumps(main(),ensure_ascii=False,indent=2))
     except Exception as e:print(json.dumps({'error':str(e)},ensure_ascii=False));sys.exit(1)

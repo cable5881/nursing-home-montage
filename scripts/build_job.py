@@ -19,7 +19,7 @@ def caption_parts(s):
     return result
 def build(job):
     plan,files=validate_plan(job);setup(job);cfg=settings(job)
-    v=read(job/'voice.json');source=Path(v['audio']);text=(job/'narration.txt').read_text().strip()
+    v=read(job/'voice.json');source=Path(v['audio']);text=(job/'narration.txt').read_text(encoding='utf-8').strip()
     if sha(source)!=v['sha256'] or digest(text)!=v['textSha256']:raise RuntimeError('Stale voice; regenerate/realign before building')
     aligned=read(v['alignment'])
     if not aligned['passed'] or aligned['sha256']!=sha(source) or aligned['textSha256']!=digest(text):raise RuntimeError('Stale or failed word alignment')
@@ -55,7 +55,7 @@ def build(job):
     write(job/'captions.json',cues)
     def stamp(t):
         ms=round(t*1000);h,ms=divmod(ms,3600000);m,ms=divmod(ms,60000);s,ms=divmod(ms,1000);return f'{h:02}:{m:02}:{s:02},{ms:03}'
-    (job/'subtitles.srt').write_text('\n\n'.join(str(i+1)+'\n'+stamp(c['start'])+' --> '+stamp(c['end'])+'\n'+'\n'.join(c['lines']) for i,c in enumerate(cues))+'\n')
+    (job/'subtitles.srt').write_text('\n\n'.join(str(i+1)+'\n'+stamp(c['start'])+' --> '+stamp(c['end'])+'\n'+'\n'.join(c['lines']) for i,c in enumerate(cues))+'\n', encoding='utf-8')
     source_root=Path(read(job/'inventory.json')['source']);shots=[];ledger=[]
     for si,sentence in enumerate(plan['sentences']):
         selected=sentence['shots'];start_frame=round(boundaries[si]*fps);last_frame=round(boundaries[si+1]*fps);count=last_frame-start_frame
@@ -73,7 +73,7 @@ def build(job):
             shot={'id':f'shot-{len(shots):02}','asset':str(dest.relative_to(job)),'start':st,'end':end,'duration':end-st,'sourceStart':src_start,'positionY':s.get('positionY',50),'description':s['description'],'sentenceIndex':si}
             shots.append(shot);ledger.append({'file':shot['asset'],'source':str(orig),'sha256':row['sha256'],'kind':row['kind'],'modified':False})
     write(job/'shot-list.json',shots);write(job/'asset-sources.json',ledger)
-    (job/'source-description.txt').write_text(json.dumps(plan['institution'],ensure_ascii=False)+'\n'+(job/'source-text.txt').read_text())
+    (job/'source-description.txt').write_text(json.dumps(plan['institution'],ensure_ascii=False)+'\n'+(job/'source-text.txt').read_text(encoding='utf-8'), encoding='utf-8')
     inst=plan['institution'];reference=cfg['typography'].get('reference_identity')==inst and bool(cfg['typography'].get('reference_asset'))
     write(job/'institution.json',{**inst,'headerMode':'reference' if reference else 'dynamic'})
     font=find_font(cfg);match=[{'family':'Project body font' if cfg['typography'].get('body_font') else 'Noto Sans SC Black','file':str(font),'index':cfg['typography']['collection_index'],'stroke':3,'angle':3,'tracking':4}]

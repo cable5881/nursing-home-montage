@@ -81,6 +81,7 @@ def main():
     if args.action=='setup-ui':return launch()
     if args.action=='_serve':return serve()
 if __name__=='__main__':
+    if hasattr(sys.stdout,'reconfigure'):sys.stdout.reconfigure(encoding='utf-8')
     try:
         result=main();print(json.dumps(result,ensure_ascii=False,indent=2))
         if isinstance(result,dict) and result.get('pending'):sys.exit(2)

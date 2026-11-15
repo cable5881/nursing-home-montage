@@ -74,5 +74,5 @@ assert dc==0,derr
 assert ec==0,eerr
 assert frames>=math.floor(opts.min_seconds*30),frames
 report={'source':str(src),'output':str(OUT/'avatar-outlined.webm'),'frames':frames,'fps':30,'size':[W,H],'cropSource':[cx,cy,cw,ch],'alphaCoverageRange':[min(alpha_stats),max(alpha_stats)],'method':'local video matting, spatial contour offset, fixed white dashes and bottom alpha fade; no changes to face or speech timing'}
-(OUT/'outline-verification.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+(OUT/'outline-verification.json').write_text(json.dumps(report,ensure_ascii=False,indent=2), encoding='utf-8')
 print(json.dumps(report,ensure_ascii=False,indent=2))

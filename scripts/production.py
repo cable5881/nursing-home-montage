@@ -86,13 +86,13 @@ def carve(job):
             if tag=='audio' and attrs.get('id')=='music-bed':
                 for key in ('data-fx-chain','data-automation','data-fx-carve'):
                     if key in attrs:bgm[key]=json.loads(attrs[key])
-    Parser().feed((job/'index.html').read_text());write(job/'bgm-timeline.json',bgm)
+    Parser().feed((job/'index.html').read_text(encoding='utf-8'));write(job/'bgm-timeline.json',bgm)
     return {'carveSaved':True}
 def input_fingerprint(job):
     # Bind checks to the actual HTML and every locally referenced media/font; no mtime approvals.
     files=list((job/'compositions').glob('*.html'))+[job/'index.html']
     import re,html
-    content=''.join(p.read_text() for p in files)
+    content=''.join(p.read_text(encoding='utf-8') for p in files)
     for path in set(re.findall(r'(?:src|href)=[\"\x27](assets/[^\"\x27]+)',content)+re.findall(r'url\([\"\x27]?(assets/[^\"\x27\)]+)',content)):
         p=job/html.unescape(path)
         if p.is_file():files.append(p)
@@ -102,7 +102,7 @@ def require_cutouts(job):
         if not (job/a['video']).is_file():raise RuntimeError('Missing requested presenter: '+a['id'])
 def check(job):
     require_cutouts(job);r=run(['npm','run','check','--','--json'],cwd=job,check=False)
-    (job/'check.log').write_text(r.stdout+'\n'+r.stderr)
+    (job/'check.log').write_text(r.stdout+'\n'+r.stderr, encoding='utf-8')
     try:d=json.JSONDecoder().raw_decode(r.stdout[r.stdout.index('{'):])[0]
     except (ValueError,json.JSONDecodeError):raise RuntimeError('Check did not return JSON; see check.log')
     d['inputFingerprint']=input_fingerprint(job);write(job/'check.json',d)
@@ -121,7 +121,7 @@ def render(job):
     if not c.get('ok') or c.get('inputFingerprint')!=input_fingerprint(job):check(job)
     cfg=settings(job);out=job/'renders/final.mp4';out.parent.mkdir(exist_ok=True)
     r=run(['npm','run','render','--','--quality','delivery','--crf',str(cfg['render']['crf']),'--fps','30','--workers',str(cfg['render']['workers']),'--output',out],cwd=job,check=False)
-    (job/'render.log').write_text(r.stdout+'\n'+r.stderr)
+    (job/'render.log').write_text(r.stdout+'\n'+r.stderr, encoding='utf-8')
     if r.returncode:raise RuntimeError('Render failed; see render.log')
     state(job,phase='rendered',video=str(out),next='verify, inspect actual rendered frames, review')
     return {'video':str(out)}

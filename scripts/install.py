@@ -3,7 +3,7 @@ import argparse,hashlib,json,os,re,shutil,subprocess,tempfile,sys
 from pathlib import Path
 
 def run(args):
-    p=subprocess.run((['rtk','proxy'] if shutil.which('rtk') else [])+list(map(str,args)),capture_output=True,text=True)
+    p=subprocess.run((['rtk','proxy'] if shutil.which('rtk') else [])+list(map(str,args)),capture_output=True,text=True,encoding="utf-8")
     if p.returncode:raise RuntimeError(p.stderr[-1500:])
     return p.stdout
 def semver(tag):
@@ -18,7 +18,7 @@ def install(project,repository='https://github.com/cable5881/nursing-home-montag
     if target.exists() and (target/'.git').exists() and not replace_local and run(['git','-C',target,'status','--porcelain']).strip():raise ValueError('技能代码有本地修改。请先保存/发布修改；项目配置无须迁移。')
     with tempfile.TemporaryDirectory(prefix='montage-install-') as tmp:
         source=Path(tmp)/'skill';run(['git','clone','--depth','1','--branch',version,repository,source])
-        manifest=json.loads((source/'release.json').read_text())
+        manifest=json.loads((source/'release.json').read_text(encoding='utf-8'))
         if manifest['config_schema']!=1:raise ValueError('此发行版需要配置迁移，保留原安装；请先执行发行版的迁移说明。')
         for name in ('SKILL.md','scripts/montage.py','scripts/project.py','preset.json'):
             if not (source/name).is_file():raise ValueError('发行包不完整')
@@ -37,5 +37,6 @@ def install(project,repository='https://github.com/cable5881/nursing-home-montag
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--project',type=Path,default=Path.cwd());p.add_argument('--repository',default='https://github.com/cable5881/nursing-home-montage');p.add_argument('--version');p.add_argument('--replace-local',action='store_true');a=p.parse_args();print(json.dumps(install(a.project,a.repository,a.version,a.replace_local),ensure_ascii=False,indent=2))
 if __name__=='__main__':
+    if hasattr(sys.stdout,'reconfigure'):sys.stdout.reconfigure(encoding='utf-8')
     try:main()
     except Exception as e:print(json.dumps({'error':str(e)},ensure_ascii=False));sys.exit(1)

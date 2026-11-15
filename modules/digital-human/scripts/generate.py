@@ -120,10 +120,10 @@ def create(args):
     if args.image:
         cfg['image']=str(Path(args.image).resolve())
     if args.prompt_file:
-        cfg["avatar"]["prompt"] = Path(args.prompt_file).read_text().strip()
+        cfg["avatar"]["prompt"] = Path(args.prompt_file).read_text(encoding='utf-8').strip()
     if args.rules_file:
         cfg["tts"]["pronunciation_dict"] = merge_rules(cfg["tts"]["pronunciation_dict"], read_json(args.rules_file))
-    text = (args.text if args.text is not None else Path(args.text_file).read_text()).strip()
+    text = (args.text if args.text is not None else Path(args.text_file).read_text(encoding='utf-8')).strip()
     if not text:
         raise RuntimeError("输入文本不能为空。")
     directory = (Path(args.out).resolve() if args.out else PROJECT_ROOT / cfg["output_dir"] /
@@ -135,8 +135,8 @@ def create(args):
     if not image.is_file() or image.stat().st_size >= 4_700_000:
         raise RuntimeError("默认人物图缺失或超过Base64上传限制。")
     shutil.copy2(image, directory / "portrait.png")
-    (directory / "text.txt").write_text(text + "\n")
-    (directory / "prompt.txt").write_text(cfg["avatar"]["prompt"] + "\n")
+    (directory / "text.txt").write_text(text + "\n", encoding='utf-8')
+    (directory / "prompt.txt").write_text(cfg["avatar"]["prompt"] + "\n", encoding='utf-8')
     state = {"version": 1, "created_at": now(), "phase": "prepared", "qa_status": "pending", "text": text,
              "image": str(directory / "portrait.png"), "image_sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
              "config": cfg, "target_seconds": args.target_seconds, "revisions": 0}
@@ -229,8 +229,8 @@ def main():
         if args.speech_rate is not None:
             state["config"]["tts"]["speech_rate"] = args.speech_rate
         if args.text_file:
-            state["text"] = Path(args.text_file).read_text().strip()
-            (directory / "text.txt").write_text(state["text"] + "\n")
+            state["text"] = Path(args.text_file).read_text(encoding='utf-8').strip()
+            (directory / "text.txt").write_text(state["text"] + "\n", encoding='utf-8')
         state["revisions"] += 1
         for key in ("tts", "submitted_audio", "submitted_duration", "submitted_audio_sha256", "qa_review", "qa_audio_sha256"):
             state.pop(key, None)

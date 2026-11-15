@@ -8,12 +8,12 @@ import project_config as pc
 def read(p):return json.loads(Path(p).read_text(encoding='utf-8'))
 def write(p,value):
     p=Path(p);p.parent.mkdir(parents=True,exist_ok=True)
-    tmp=p.with_suffix(p.suffix+'.tmp');tmp.write_text(json.dumps(value,ensure_ascii=False,indent=2)+'\n');tmp.replace(p)
+    tmp=p.with_suffix(p.suffix+'.tmp');tmp.write_text(json.dumps(value,ensure_ascii=False,indent=2)+'\n', encoding='utf-8');tmp.replace(p)
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def digest(value):return hashlib.sha256(json.dumps(value,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
 def project_root():return pc.root()
 def run(args,cwd=None,check=True,binary=False,env=None):
-    result=subprocess.run((['rtk','proxy'] if shutil.which('rtk') else [])+list(map(str,args)),cwd=cwd,capture_output=True,text=not binary,env=env)
+    result=subprocess.run((['rtk','proxy'] if shutil.which('rtk') else [])+list(map(str,args)),cwd=cwd,capture_output=True,text=not binary,encoding=None if binary else "utf-8",env=env)
     if check and result.returncode:raise RuntimeError(str(result.stderr)[-3500:]+'\n'+str(result.stdout)[-1500:])
     return result
 def probe(path):return json.loads(run(['ffprobe','-v','error','-show_format','-show_streams','-of','json',path]).stdout)
@@ -74,7 +74,7 @@ def inventory(source,job):
         else:continue
         rows.append(row)
     write(job/'inventory.json',{'source':str(source),'files':rows,'blockedDocuments':blocked})
-    (job/'source-text.txt').write_text('\n\n'.join('【'+r['path']+'】\n'+r['text'] for r in rows if r['kind']=='text'))
+    (job/'source-text.txt').write_text('\n\n'.join('【'+r['path']+'】\n'+r['text'] for r in rows if r['kind']=='text'), encoding='utf-8')
     state(job,phase='inventoried',input=str(source),next='Read source-text and inspect media; author plan.json using references/plan-schema.md')
     return {'files':len(rows),'textDocuments':sum(r['kind']=='text' for r in rows),'blockedDocuments':blocked}
 
@@ -130,7 +130,7 @@ def validate_plan(job):
         for c in s.get('captions',[]):
             if clean(''.join(c['lines']))!=clean(c['text']) or not 1<=len(c['lines'])<=2:raise ValueError('Caption lines must preserve wording and use 1–2 lines')
     # Quotations prove provenance, not the truth of an arbitrary paraphrase; SKILL.md requires semantic source review.
-    (job/'narration.txt').write_text('\n'.join(s['text'] for s in plan['sentences'])+'\n')
+    (job/'narration.txt').write_text('\n'.join(s['text'] for s in plan['sentences'])+'\n', encoding='utf-8')
     return plan,files
 
 def engine_env(job):return pc.engine_env(job)
@@ -185,7 +185,7 @@ def align_audio(audio,text,out,cfg,prompt=''):
 def voice(job,reuse=None):
     plan,_=validate_plan(job);setup(job);cfg=settings(job);
     if not cfg['voice'].get('speaker'):raise ValueError('请先选择已就绪的数字人，或为该人物完成音色复刻。')
-    text=(job/'narration.txt').read_text().strip();out=job/'runs/voice'
+    text=(job/'narration.txt').read_text(encoding='utf-8').strip();out=job/'runs/voice'
     key=digest({'text':text,'tts':read(job/'avatar-engine.json')['tts'],'connection':cfg.get('person',{}).get('connection'),'project':str(project_root())})
     cache=project_root()/'作品/.montage-cache/voice'/f'{key}.json'
     if (job/'voice.json').exists():

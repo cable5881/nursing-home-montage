@@ -49,7 +49,7 @@ class PortableTests(unittest.TestCase):
         self.assertEqual(Path(runtime['settings']['avatar']['portrait']).read_bytes(),b'image fixture')
         self.assertTrue((Path(runtime['engine'])/'scripts/montage.py').is_file())
     def test_batch_counts_and_assignments(self):
-        self.people(30);source=self.root/'institution';source.mkdir();(source/'facts.txt').write_text('本机构设有阅读室。')
+        self.people(30);source=self.root/'institution';source.mkdir();(source/'facts.txt').write_text('本机构设有阅读室。', encoding='utf-8')
         out=self.root/'batch';result=batch.prepare(source,out,'all',3,{'p00':2});self.assertEqual(result['total'],89)
         data=read(out/'batch.json');self.assertEqual(len({r['id'] for r in data['items']}),89)
     def test_batch_resumes_completed_steps_and_caps_pending_jobs(self):
@@ -76,14 +76,14 @@ class PortableTests(unittest.TestCase):
         with patch('voice_clone.call',return_value={'status':2}):self.assertTrue(voice_clone.prepare('p00')['ready'])
         self.assertEqual(pc.person()['speaker'],'custom_speaker_id');self.assertTrue(pc.person()['custom_speaker_id'])
     def test_installer_updates_code_without_touching_user_data(self):
-        self.people(10);target=self.root/'.agents/skills/nursing-home-montage';target.mkdir(parents=True);(target/'old.txt').write_text('old')
+        self.people(10);target=self.root/'.agents/skills/nursing-home-montage';target.mkdir(parents=True);(target/'old.txt').write_text('old', encoding='utf-8')
         original=(pc.directory()/'project.json').read_bytes();credentials=(pc.directory()/'secrets.json').read_bytes()
         def git(args):
             if args[1]=='ls-remote':return 'abc\trefs/tags/v2.0.0\nabc\trefs/tags/v2.1.0\n'
             if args[1]=='clone':
                 dest=Path(args[-1]);dest.mkdir();(dest/'scripts').mkdir()
-                for name in ('SKILL.md','preset.json','scripts/montage.py','scripts/project.py'):(dest/name).write_text('fixture')
-                (dest/'release.json').write_text(json.dumps({'config_schema':1}))
+                for name in ('SKILL.md','preset.json','scripts/montage.py','scripts/project.py'):(dest/name).write_text('fixture', encoding='utf-8')
+                (dest/'release.json').write_text(json.dumps({'config_schema':1}), encoding='utf-8')
             return ''
         with patch('install.run',side_effect=git):result=install.install(self.root)
         self.assertEqual(result['version'],'v2.1.0');self.assertEqual(original,(pc.directory()/'project.json').read_bytes());self.assertEqual(credentials,(pc.directory()/'secrets.json').read_bytes());self.assertTrue((Path(result['previousCode'])/'old.txt').exists())

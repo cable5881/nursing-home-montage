@@ -26,7 +26,7 @@ def init():
     d=directory();p=d/'project.json'
     if not p.exists():write(p,{'schema_version':SCHEMA,'project_id':uuid.uuid4().hex,'default_person':None,'connections':{},'settings':{},'people':{},'output_dir':'作品','updates':{'repository':'https://github.com/cable5881/nursing-home-montage','channel':'stable'}})
     config=load()
-    (d/'.gitignore').write_text('*\n!.gitignore\n')
+    (d/'.gitignore').write_text('*\n!.gitignore\n', encoding='utf-8')
     return {'project':str(root()),'config':str(p),'initialized':True,'people':len(config['people'])}
 def load():
     p=directory()/'project.json'
@@ -136,7 +136,7 @@ def freeze(job):
         source=asset_path(path);target=job/'assets/adapters'/kind
         if not (source/'generate.py').is_file():raise ValueError('适配器缺少generate.py')
         shutil.copytree(source,target);adapters[kind]=str((target/'generate.py').resolve())
-    data={'schema_version':1,'version':(SKILL/'VERSION').read_text().strip(),'engine':str(engine),'project':str(root()),'settings':cfg,'adapters':adapters,'manifest':manifest}
+    data={'schema_version':1,'version':(SKILL/'VERSION').read_text(encoding='utf-8').strip(),'engine':str(engine),'project':str(root()),'settings':cfg,'adapters':adapters,'manifest':manifest}
     write(bound,data);return data
 def engine_env(job):
     cfg=resolved(job);name=cfg.get('person',{}).get('connection');conn=load()['connections'].get(name,{})
