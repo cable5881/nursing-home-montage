@@ -6,11 +6,11 @@
 
 1. `python SCRIPT/project.py init` 幂等创建 `.montage/project.json`，不覆盖已有配置。
 2. `python SCRIPT/project.py doctor` 只返回缺项布尔值、人物状态和工具可用性，不回显密钥。
-3. `python SCRIPT/project.py setup-ui` 返回仅绑定127.0.0.1的临时设置页链接。让用户在本地页面填写一次：语音API Key、视频AK/SK、音频存储桶/区域/Endpoint。留空保留现有值。页面不访问外部脚本、不记录输入日志，30分钟无操作后停止。
-4. 若用户已提供凭据文件，智能体读取其格式并转换为临时私有JSON，执行 `project.py credentials --file <文件> --connection main`。字段为api_key/ak/sk/bucket/region/endpoint；导入后清理临时副本，输出只报告成功和缺项。已有环境变量或macOS钥匙串可通过连接引用绑定；配置中保存引用，不把Key写入公开配置。Windows/Linux使用环境引用或项目私有文件。
+3. `python SCRIPT/project.py setup-ui` 返回仅绑定127.0.0.1的临时设置页链接。让用户在本地页面填写一次：语音API Key、视频AK/SK。文件中转默认 tmpfile，无需账号、Key 或存储桶；仅选择 TOS 时补存储桶/区域/Endpoint。留空保留现有值。页面不访问外部脚本、不记录输入日志，30分钟无操作后停止。
+4. 若用户已提供凭据文件，智能体读取其格式并转换为临时私有JSON，执行 `project.py credentials --file <文件> --connection main`。字段为api_key/ak/sk，选配storage_provider（tmpfile/tos）及bucket/region/endpoint；导入后清理临时副本，输出只报告成功和缺项。已有环境变量或macOS钥匙串可通过连接引用绑定；配置中保存引用，不把Key写入公开配置。Windows/Linux使用环境引用或项目私有文件。
 5. 通过 `project.py configure --file <智能体生成的补丁JSON>` 保存settings、connections、default_person等用户偏好。未指定项保留原值。
 
-当前原生适配器为火山语音V3 + OmniHuman2.0 + TOS，服务凭据每项目连接配置一次，几十个人物共享同一连接。不要假设任意一个Key能跨服务通用。当前用户的旧项目可以把已存在的凭据路径和钥匙串引用绑定到连接，不要求重新填写。
+当前原生适配器为火山语音V3 + OmniHuman2.0，默认通过 tmpfile 中转驱动音频，TOS 选配。服务凭据每项目连接配置一次，几十个人物共享同一连接。不要假设任意一个Key能跨服务通用。当前用户的旧项目可以把已存在的凭据路径和钥匙串引用绑定到连接，不要求重新填写。
 
 官方入口：[语音控制台](https://console.volcengine.com/speech/app)、[访问密钥](https://console.volcengine.com/iam/keymanage/)、[TOS](https://console.volcengine.com/tos)。根据接口实际权限提示定位服务开通/音色资源；不伪造权限检查通过，不为检查凭据偷偷生成几十段视频。
 
@@ -32,6 +32,8 @@
 ## 用户配置示意（智能体维护）
 
 connections.main包含speech_key/access_key/secret_key引用、storage、clone_mode、speaker_pool。people.<id>包含name、portrait、sample、speaker、custom_speaker_id、connection、speech_rate、status。所有相对资产路径均相对于.montage；用户在对话提供的外部路径应转换为绝对路径或复制到.montage/assets，避免依赖技能目录。
+
+storage 默认 `{"provider":"tmpfile"}`；无需填写其他字段。选择 TOS 使用 `{"provider":"tos","bucket":"用户存储桶","region":"cn-beijing","endpoint":"tos-cn-beijing.volces.com"}`。旧连接已有 bucket 但未写 provider 时继续按 TOS 处理，避免升级改变现有任务；明确切换时只改 storage.provider，保留原桶配置供以后选用。doctor 的 storage=true 仅代表配置齐全，不代表联网或数字人抓取已验证。
 
 字体默认包内Noto，适配各系统。项目可用settings.typography.body_font和collection_index指定自己的字体；settings.music.enabled/resource指定自己的配乐。当前没有内置通用配乐，缺音乐时可询问用户提供或接受无BGM；不借用其他用户的商业授权曲目。
 

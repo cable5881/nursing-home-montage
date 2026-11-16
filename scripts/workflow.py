@@ -188,7 +188,7 @@ def setup(job,install=False):
     else:e['image']=''
     if cfg['voice'].get('custom_speaker_id'):e['tts']['custom_speaker_id']=cfg['voice']['custom_speaker_id']
     connection=cfg.get('service',{})
-    e['storage'].update(connection.get('storage',{}))
+    e['storage']=pc.storage_settings(connection.get('storage',{}))
     e['tts'].update({k:v for k,v in connection.get('tts',{}).items() if k in ('endpoint','resource_id','model','sample_rate','bit_rate')})
     e['avatar'].update(connection.get('avatar',{}))
     if cfg['avatar'].get('prompt'):e['avatar']['prompt']=cfg['avatar']['prompt']

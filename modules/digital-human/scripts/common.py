@@ -97,6 +97,7 @@ def sanitized(value, secrets=()):
         for secret in secrets:
             if secret:
                 value = value.replace(secret, "[REDACTED]")
+        value = re.sub(r'https://d\.tmpfile\.link/[^\s\"\']+', '[temporary URL omitted]', value)
         return re.sub(r"https?://[^\s\"']+(?:[?&](?:x-signature|X-Tos-Signature))[^\s\"']*",
                       "[temporary signed URL omitted]", value, flags=re.I)
     return value

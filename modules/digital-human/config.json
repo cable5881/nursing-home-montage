@@ -24,11 +24,7 @@
     "prompt": "固定机位，正面中景。人物以平静、克制的日常交谈状态对镜头说话，目光柔和稳定，眼睑自然放松，眉毛平稳，偶尔轻缓眨眼。双唇和下颌随音节自然开合，动作幅度克制，停顿时双唇轻合，保持淡淡微笑。头颈和肩部稳定放松，双手安放在腿上。"
   },
   "storage": {
-    "bucket": "",
-    "region": "cn-beijing",
-    "endpoint": "tos-cn-beijing.volces.com",
-    "prefix": "nursing-home-montage",
-    "url_expires_seconds": 14400
+    "provider": "tmpfile"
   },
   "verification": {
     "asr_model": "base",

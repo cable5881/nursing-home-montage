@@ -1,16 +1,20 @@
-"""Volcengine visual async tasks with durable submission state and private TOS audio."""
+"""Volcengine visual async tasks with durable state and selectable audio handoff."""
 import ast
 import base64
 import contextlib
 import hashlib
 import io
 import json
+import sys
 import time
 import urllib.request
 import uuid
 from pathlib import Path
 
 from common import access_keys, now, sanitized, save_state
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'scripts'))
+from file_transfer import storage_settings, tmpfile_audio
 
 
 class AvatarClient:
@@ -44,12 +48,18 @@ class AvatarClient:
 
     def storage_client(self):
         import tos
-        settings = self.cfg["storage"]
+        settings = storage_settings(self.cfg.get("storage"))
         return tos.TosClientV2(self.ak, self.sk, settings["endpoint"], settings["region"])
 
     def cleanup(self, directory, state):
         entry = state.get("upload")
         if not entry or entry.get("deleted"):
+            return
+        if entry.get("provider", "tos") == "tmpfile":
+            # Anonymous files expire on the service; do not claim remote deletion.
+            (Path(directory) / "transfer-link.json").unlink(missing_ok=True)
+            entry["local_link_removed"] = True
+            save_state(directory, state)
             return
         try:
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -71,19 +81,24 @@ class AvatarClient:
             raise RuntimeError("提交音频在核验后发生变化，先重新核验。")
         if hashlib.sha256(Path(state["image"]).read_bytes()).hexdigest() != state["image_sha256"]:
             raise RuntimeError("人物图在准备后发生变化，先核对新的图像。")
-        import tos
-        settings = self.cfg["storage"]
-        if not state.get("upload"):
-            state["upload"] = {"bucket": settings["bucket"], "key": settings["prefix"].rstrip("/") +
-                               "/" + uuid.uuid4().hex + "/narration.mp3", "deleted": False}
-        save_state(directory, state)
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            storage = self.storage_client()
-            storage.put_object_from_file(state["upload"]["bucket"], state["upload"]["key"],
-                                         state["submitted_audio"], content_type="audio/mpeg")
-            url = storage.pre_signed_url(tos.HttpMethodType.Http_Method_Get,
-                bucket=state["upload"]["bucket"], key=state["upload"]["key"],
-                expires=settings["url_expires_seconds"]).signed_url
+        settings = storage_settings(self.cfg.get("storage"))
+        if settings["provider"] == "tmpfile":
+            url, state["upload"] = tmpfile_audio(directory, state["submitted_audio"])
+            save_state(directory, state)
+        else:
+            import tos
+            if not state.get("upload"):
+                state["upload"] = {"provider": "tos", "bucket": settings["bucket"],
+                    "key": settings["prefix"].rstrip("/") + "/" + uuid.uuid4().hex + "/narration.mp3",
+                    "deleted": False}
+            save_state(directory, state)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                storage = self.storage_client()
+                storage.put_object_from_file(state["upload"]["bucket"], state["upload"]["key"],
+                                             state["submitted_audio"], content_type="audio/mpeg")
+                url = storage.pre_signed_url(tos.HttpMethodType.Http_Method_Get,
+                    bucket=state["upload"]["bucket"], key=state["upload"]["key"],
+                    expires=settings["url_expires_seconds"]).signed_url
         avatar = self.cfg["avatar"]
         body = {"req_key": avatar["req_key"], "binary_data_base64": [base64.b64encode(
                     Path(state["image"]).read_bytes()).decode()], "audio_url": url,
@@ -97,7 +112,7 @@ class AvatarClient:
             state["error"] = sanitized(str(error), (self.ak, self.sk, url))
             save_state(directory, state)
             raise RuntimeError(state["error"]) from None
-        state["submit_response"] = sanitized(response, (self.ak, self.sk))
+        state["submit_response"] = sanitized(response, (self.ak, self.sk, url))
         task_id = (response.get("data") or {}).get("task_id")
         if response.get("code") != 10000 or not task_id:
             state["phase"] = "submit_rejected"

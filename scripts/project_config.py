@@ -1,6 +1,7 @@
 """Persistent user data lives outside the replaceable skill installation."""
 import copy,hashlib,json,os,re,shutil,subprocess,sys,uuid
 from pathlib import Path
+from file_transfer import storage_settings
 
 SKILL=Path(__file__).resolve().parent.parent
 SCHEMA=1
@@ -77,12 +78,11 @@ def store_connection(name,values):
     for key,field in (('api_key','speech_key'),('ak','access_key'),('sk','secret_key')):
         if values.get(key):
             slot=name+'.'+key;secrets[slot]=values[key].strip();conn[field]={'local':slot}
-    storage=conn.setdefault('storage',{})
+    storage=copy.deepcopy(conn.get('storage',{}))
+    if values.get('storage_provider'):storage['provider']=values['storage_provider'].strip()
     for k in ('bucket','region','endpoint'):
         if values.get(k):storage[k]=values[k].strip()
-    storage.setdefault('prefix','nursing-home-montage');storage.setdefault('url_expires_seconds',14400)
-    if storage.get('bucket'):
-        storage.setdefault('region','cn-beijing');storage.setdefault('endpoint','tos-'+storage['region']+'.volces.com')
+    conn['storage']=storage_settings(storage)
     write(directory()/'secrets.json',secrets,private=True)
     cfg['connections'][name]=conn;write(directory()/'project.json',cfg)
     return {'saved':True,'connection':name}
@@ -110,6 +110,7 @@ def resolved(job):
     out=merge(out,plan.get('settings',{}))
     conn=cfg['connections'].get(out.get('person',{}).get('connection'),{})
     out['service']={k:copy.deepcopy(conn[k]) for k in ('provider','storage','tts','avatar') if k in conn}
+    out['service']['storage']=storage_settings(conn.get('storage'))
     for section,key in (('avatar','portrait'),('music','resource'),('typography','body_font'),('typography','reference_asset'),('cover','image'),('cover','font')):
         if section not in out:continue
         if out[section].get(key):out[section][key]=str(asset_path(out[section][key]))
@@ -171,8 +172,11 @@ def engine_env(job):
 def doctor():
     cfg=load();tools={k:bool(shutil.which(k)) for k in ('ffmpeg','ffprobe','node','npm','uv')};connections={}
     for name,c in cfg['connections'].items():
-        api,ak,sk=connection_keys(c);s=c.get('storage',{})
-        connections[name]={'speech_key':bool(api),'access_keys':bool(ak and sk),'storage':all(s.get(k) for k in ('bucket','region','endpoint'))}
+        api,ak,sk=connection_keys(c)
+        try:
+            s=storage_settings(c.get('storage'));storage_ok=s['provider']=='tmpfile' or all(s.get(k) for k in ('bucket','region','endpoint'))
+        except ValueError:storage_ok=False
+        connections[name]={'speech_key':bool(api),'access_keys':bool(ak and sk),'storage':storage_ok}
     people=[]
     for p in cfg['people'].values():
         people.append({'id':p['id'],'name':p['name'],'portrait':bool(p.get('portrait') and asset_path(p['portrait']).is_file()),'voice':bool(p.get('speaker')),'connection':p['connection'],'status':p.get('status'),
