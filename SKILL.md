@@ -23,7 +23,6 @@ description: 用养老机构实拍素材和事实文本制作含数字人、封�
 | 多人物、多条成片 | [批次](references/batch.md) |
 | 改正文模板或排版 | [模板](references/templates.md) |
 | 根据平台截图调整遮挡避让 | [平台 UI](references/platform-ui.md) |
-| 安装、更新或发布 skill | [更新](references/updates.md) |
 
 ## 制作约束
 

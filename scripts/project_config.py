@@ -24,7 +24,7 @@ def root(start=None):
 def directory():return root()/'.montage'
 def init():
     d=directory();p=d/'project.json'
-    if not p.exists():write(p,{'schema_version':SCHEMA,'project_id':uuid.uuid4().hex,'default_person':None,'connections':{},'settings':{},'people':{},'output_dir':'作品','updates':{'repository':'https://github.com/cable5881/nursing-home-montage','channel':'stable'}})
+    if not p.exists():write(p,{'schema_version':SCHEMA,'project_id':uuid.uuid4().hex,'default_person':None,'connections':{},'settings':{},'people':{},'output_dir':'作品'})
     config=load()
     (d/'.gitignore').write_text('*\n!.gitignore\n', encoding='utf-8')
     return {'project':str(root()),'config':str(p),'initialized':True,'people':len(config['people'])}
@@ -41,7 +41,7 @@ def merge(base,override):
     for k,v in override.items():out[k]=merge(out[k],v) if isinstance(v,dict) and isinstance(out.get(k),dict) else copy.deepcopy(v)
     return out
 def save_patch(patch):
-    if set(patch)-{'settings','connections','default_person','output_dir','updates'}:raise ValueError('只能修改项目设置、连接或默认人物；人物使用 people 命令。')
+    if set(patch)-{'settings','connections','default_person','output_dir'}:raise ValueError('只能修改项目设置、连接或默认人物；人物使用 people 命令。')
     cfg=merge(load(),patch);write(directory()/'project.json',cfg);return {'saved':True}
 def asset_path(value):
     if not value:return None
@@ -114,6 +114,19 @@ def resolved(job):
         if section not in out:continue
         if out[section].get(key):out[section][key]=str(asset_path(out[section][key]))
     return out
+def runtime_files(base=SKILL):
+    """Only production resources belong in a resumable task engine."""
+    roots=['SKILL.md','README.md','preset.json','VERSION','release.json','LICENSE','THIRD_PARTY_NOTICES.md','agents','assets','modules','scripts','references']
+    result=[]
+    for name in roots:
+        source=base/name
+        for p in ([source] if source.is_file() else source.rglob('*') if source.is_dir() else []):
+            rel=p.relative_to(base)
+            if not p.is_file() or any(x in ('.git','__pycache__','.DS_Store') for x in rel.parts) or p.suffix=='.pyc':continue
+            if rel.parts[0]=='scripts' and (p.name.startswith('test_') or p.name in ('install.py','regression.py')):continue
+            result.append(p)
+    return sorted(result)
+
 def freeze(job):
     job=Path(job);bound=job/'runtime.json'
     if bound.exists():return read(bound)
@@ -128,7 +141,7 @@ def freeze(job):
         source=Path(cfg['cover']['image']);dest=job/'assets/cover-input'/source.name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,dest);cfg['cover']['image']=str(dest.resolve())
     plan=read(job/'plan.json') if (job/'plan.json').exists() else {}
     if plan.get('closingHookSelection'):cfg['closingHookSelection']=copy.deepcopy(plan['closingHookSelection'])
-    files=[p for p in SKILL.rglob('*') if p.is_file() and not any(x in ('.git','__pycache__') for x in p.relative_to(SKILL).parts)]
+    files=runtime_files()
     manifest={str(p.relative_to(SKILL)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(files)}
     ident=hashlib.sha256(json.dumps(manifest,sort_keys=True).encode()).hexdigest()[:20]
     engine=directory()/'engines'/ident
