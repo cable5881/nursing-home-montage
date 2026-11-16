@@ -1,4 +1,4 @@
-"""One native-pixel full-frame layout; glyphs are measured, never stretched."""
+"""The approved full-frame reference layout, with measured caption and chapter fit."""
 import base64,html,json,math,sys
 from pathlib import Path
 from fontTools import subset
@@ -40,75 +40,88 @@ def font_subset(job,name,path,index,text):
 
 
 def compose(job):
-    cfg=settings(job);spec=pc.merge(read(SKILL/'assets/templates/fullscreen-orange.json'),cfg['template'].get('overrides',{}));cap=spec['caption']
-    match=read(job/'orange-font-match.json')[0];typography=Typography(match['file'],match.get('index'),cap)
-    if not (job/'caption-source.json').exists():write(job/'caption-source.json',read(job/'captions.json'))
-    cues,changes=reflow(read(job/'captions.json'),typography,clean,character_times(job));write(job/'captions.json',cues)
-    profiles=select_profiles(cfg.get('platform_ui',{}));rows=[];max_height=0
+    cfg=settings(job);spec=pc.merge(read(SKILL/'assets/templates/fullscreen-orange.json'),cfg['template'].get('overrides',{}))
+    cap=spec['caption'];match=read(job/'orange-font-match.json')[0]
+    typography=Typography(match['file'],match.get('index'),cap)
+    source=job/'caption-source.json'
+    if not source.exists():write(source,read(job/'captions.json'))
+    cues,changes=reflow(read(job/'captions.json'),typography,clean,character_times(job))
+    write(job/'captions.json',cues)
+    profiles=select_profiles(cfg.get('platform_ui',{}))
+    rows=[];max_height=0
     for cue in cues:
         rs=[typography.bounds(line,cue.get('focus','') if cue.get('focus','') in line else '',j)[2] for j,line in enumerate(cue['lines'])]
         max_height=max(max_height,max(r[3] for r in rs)-min(r[1] for r in rs));rows.append(rs)
+    # Select one stable zone per export; common profiles intersect all selected app layouts.
     limits=list(cap['limits'])
     if profiles:limits[3]=cap.get('measured_bottom_limit',1920)
-    placement=lowest_box(cap['max_width'],max_height,limits,profiles);center=(placement[0]+placement[2])/2;bottom=placement[3]
-    fits=[];painted=[]
+    placement=lowest_box(cap['max_width'],max_height,limits,profiles)
+    center=(placement[0]+placement[2])/2;bottom=placement[3]
+    painted=[];fits=[]
     for cue,rs in zip(cues,rows):
-        dx=center-540;dy=bottom-max(r[3] for r in rs);actual=[[r[0]+dx,r[1]+dy,r[2]+dx,r[3]+dy] for r in rs]
+        dx=center-540;dy=bottom-max(r[3] for r in rs)
+        actual=[[r[0]+dx,r[1]+dy,r[2]+dx,r[3]+dy] for r in rs]
         painted.extend(actual);fits.append({'start':cue['start'],'end':cue['end'],'lines':cue['lines'],'paintedBoundsNative':actual,'translationNative':[dx,dy]})
     checks=audit(painted,profiles)
     if any(c['overlappingOrClippedLines'] for c in checks):raise ValueError('Subtitle intersects measured platform UI')
-    write(job/'platform-ui-audit.json',{'mode':cfg.get('platform_ui',{}).get('mode','common'),'basis':'project-owned screenshot profiles','placementNative':placement,'profiles':profiles,'platforms':checks})
-    avatars=read(job/'avatars.json') if (job/'avatars.json').exists() else [];av=spec['avatar'];chapter_top=spec['chapter']['rect'][1]
+    write(job/'platform-ui-audit.json',{'mode':cfg.get('platform_ui',{}).get('mode','common'),'basis':'project-owned measured screenshot profiles; no universal app dimensions assumed','placementNative':placement,'profiles':profiles,'platforms':checks})
+    write(job/'caption-fit.json',{'fontSizeChanged':False,'styleBasis':'approved-reference','maxAllowedWidthNative':cap['max_width'],'changes':changes,'cues':fits})
+
+    # Generate the unchanged shot/audio scaffold and fresh project-owned font subsets.
+    avatars=read(job/'avatars.json') if (job/'avatars.json').exists() else []
+    av=spec['avatar'];chapter_top=spec['chapter']['rect'][1]*1920/1717
     for a in avatars:
         a.update(x=av['x'],y=min(av['bottom'],chapter_top-24,placement[1]-24)-av['height'],width=av['width'],height=av['height'])
-        if a['y']<480:raise ValueError('数字人没有足够空间；调整尺寸，不覆盖标题或字幕。')
+        if a['y']<520:raise ValueError('Full-frame avatar has no space between header and captions; configure its dimensions')
     write(job/'avatars.json',avatars)
-    inst=read(job/'institution.json');timeline=read(job/'natural-timeline.json');font_roles=cfg['template'].get('overrides',{}).get('fonts',{})
-    all_text=''.join(''.join(c['lines']) for c in cues)+''.join(str(t[2]) for t in timeline['chapters'])+''.join(inst.get(k,'') for k in ('name','displayName','headline'))+' ·'
-    styles=font_subset(job,'OrangeRounded',match['file'],match.get('index'),all_text)
-    metrics={}
+    # Use the approved reference geometry while sharing the one current media scaffold.
+    inst=read(job/'institution.json');timeline=read(job/'natural-timeline.json')
+    all_text=''.join(''.join(c['lines']) for c in cues)+(job/'narration.txt').read_text()+json.dumps(inst,ensure_ascii=False)+''.join(str(c[2]) for c in timeline['chapters'])
+    font_styles=font_subset(job,'OrangeRounded',match['file'],match.get('index'),all_text)
+    label_metrics=None
+    roles=cfg['template'].get('overrides',{}).get('fonts',{})
     for role,family in [('body','OrangeLabel'),('title','TitleFace'),('subtitle','BrandFace')]:
-        definition=font_roles.get(role,{});path=definition.get('file') or str(SKILL/'assets/NotoSansSC-Black.otf');index=definition.get('index')
-        styles+=font_subset(job,family,path,index,all_text)
-        metrics[family]=Typography(path,index,{**cap,'angle':0,'tracking':0})
-    font_styles=styles
-    styles='#root{position:absolute;inset:0;pointer-events:none}.overlay{position:absolute;inset:0;width:100%;height:100%}'
+        definition=roles.get(role,{})
+        path=definition.get('file') or str(SKILL/'assets/NotoSansSC-Black.otf');index=definition.get('index')
+        font_styles+=font_subset(job,family,path,index,all_text)
+        if role=='body':label_metrics=Typography(path,index,cap)
     esc=lambda s:html.escape(str(s),quote=True)
+    styles='#root{position:absolute;inset:0;pointer-events:none}.overlay{position:absolute;inset:0;width:100%;height:100%}'
     def document(ident,body):
-        return f'<template><style>{styles}</style><div id="root" data-composition-id="{ident}" data-width="1080" data-height="1920"><svg class="overlay" viewBox="0 0 1080 1920" xmlns="http://www.w3.org/2000/svg">{body}</svg></div><script>window.__timelines["{ident}"]=gsap.timeline({{paused:true}});</script></template>'
-    def text_width(text,family,size):
-        font=metrics[family];cmap=font.cm;return sum(font.font['hmtx'][cmap[ord(c)]][0]*size/font.units for c in text)
-    def header_size(text,family,initial,width):
-        size=initial
-        while size>48 and text_width(text,family,size)>width:size-=1
-        if text_width(text,family,size)>width:raise ValueError('标题或机构简称过长，请改短，不拉伸字形。')
-        return size
-    h=spec['header'];hx,hy=h['translation'];brand=inst['displayName'].replace('·',' · ')
-    ts=header_size(inst['headline'],'TitleFace',120,h['title_width']);bs=header_size(brand,'BrandFace',120,h['brand_width'])
-    ui=f'<g transform="translate({hx} {hy}) scale({h["scale"]})"><text x="540" y="246" text-anchor="middle" font-style="italic" font-family="TitleFace" font-weight="900" font-size="{ts}" fill="white" stroke="#14100C" stroke-width="6" paint-order="stroke fill" stroke-linejoin="round">{esc(inst["headline"])}</text><path transform="scale(1.1790393 1.1182295)" fill="#FF941F" d="M58 265L788 251L856 265L829 278L877 288L853 304L887 316L871 330L883 344L858 354L871 370L827 383L92 401L38 383L51 369L24 351L45 337L26 321L55 306L42 291L76 281Z"/><text x="540" y="395" text-anchor="middle" font-style="italic" font-family="BrandFace" font-weight="900" font-size="{bs}" fill="white" stroke="#111" stroke-width="7" paint-order="stroke fill" stroke-linejoin="round">{esc(brand)}</text></g>'
-    x,y,minimum,height=spec['chapter']['rect'];size=spec['chapter']['font_size'];chapter_boxes=[]
+        return f'<template><style>{styles}</style><div id="root" data-composition-id="{ident}" data-width="1080" data-height="1920"><svg class="overlay" width="1080" height="1920" viewBox="0 0 916 1717" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">{body}</svg></div><script>const tl=gsap.timeline({{paused:true}});window.__timelines["{ident}"]=tl;</script></template>'
+    inst=read(job/'institution.json');h=spec['header'];hx,hy=h['translation']
+    brand=inst['displayName'].replace('·',' · ')
+    ui=f'''<g transform="translate({hx*916/1080} {hy*1717/1920}) scale({h['scale']})"><text x="458" y="220" text-anchor="middle" font-family="TitleFace" font-size="86" font-weight="900" font-style="italic" textLength="{h['title_width']}" lengthAdjust="spacingAndGlyphs" fill="white" stroke="#14100C" stroke-width="10" paint-order="stroke fill" stroke-linejoin="round" style="text-shadow:0 4px 6px #0008">{esc(inst['headline'])}</text><path fill="#FF941F" d="M58 265L788 251L856 265L829 278L877 288L853 304L887 316L871 330L883 344L858 354L871 370L827 383L92 401L38 383L51 369L24 351L45 337L26 321L55 306L42 291L76 281Z"/><text x="458" y="353" text-anchor="middle" font-family="BrandFace" font-weight="900" font-style="italic" font-size="82" textLength="{h['brand_width']}" lengthAdjust="spacingAndGlyphs" fill="white" stroke="#111" stroke-width="10" paint-order="stroke fill" stroke-linejoin="round">{esc(brand)}</text></g>'''
+    timeline=read(job/'natural-timeline.json');x,y,w,height=spec['chapter']['rect']
     for i,(st,du,label) in enumerate(timeline['chapters']):
-        width=max(minimum,text_width(label,'OrangeLabel',size)+40)
-        if x+width>980:raise ValueError('章节标签过长，请改短，不压扁文字。')
-        chapter_boxes.append([x,y,width,height])
-        ui+=f'<g id="chapter-{i}" class="clip" data-start="{st}" data-duration="{du}" data-track-index="1"><rect x="{x}" y="{y}" width="{width}" height="{height}" rx="7" fill="#FF982D"/><text x="{x+width/2}" y="{y+height/2}" dominant-baseline="central" text-anchor="middle" font-family="OrangeLabel" font-weight="900" font-size="{size}" fill="#111">{esc(label)}</text></g>'
+        size=spec['chapter']['font_size']
+        label_width=sum(label_metrics.font['hmtx'][label_metrics.cm[ord(c)]][0]*size/label_metrics.units for c in label)
+        width=max(w,label_width+40)
+        if x+width>840:raise ValueError('章节标签过长，请改短，不压扁文字。')
+        ui+=f'<g id="chapter-{i}" class="clip" data-start="{st}" data-duration="{du}" data-track-index="1"><rect x="{x}" y="{y}" width="{width}" height="{height}" rx="7" fill="#FF982D"/><text x="{x+width/2}" y="{y+54}" text-anchor="middle" font-family="OrangeLabel" font-size="{spec["chapter"]["font_size"]}" font-weight="900" fill="#111">{esc(label)}</text></g>'
+    (job/'compositions').mkdir(exist_ok=True)
+    (job/'compositions/orange-ui.html').write_text(document('orange-ui',ui),encoding='utf-8')
     groups=[]
     for i,(cue,fit) in enumerate(zip(cues,fits)):
         parts=[]
         for row,line in enumerate(cue['lines']):
-            focus=cue.get('focus','');focus=focus if focus in line else '';b,tx,r=typography.bounds(line,focus,row);sx,sy=cap['scales'][row];content=esc(line)
+            focus=cue.get('focus','');focus=focus if focus in line else ''
+            b,tx,r=typography.bounds(line,focus,row);sx,sy=cap['scales'][row]
+            content=esc(line)
             if focus:
                 before,after=line.split(focus,1);content=esc(before)+f'<tspan fill="#FDD722" font-size="{cap["font_size"]*cap["focus_ratio"]}">{esc(focus)}</tspan>'+esc(after)
-            parts.append(f'<g transform="translate({tx} {cap["baselines"][row]}) scale({sx})"><text font-family="OrangeRounded" font-weight="700" font-size="{cap["font_size"]}" letter-spacing="{cap["tracking"]}" fill="{"#FA98C3" if row else "#FFF"}" stroke="#15100B" stroke-width="{cap["stroke"]}" stroke-linejoin="round" paint-order="stroke fill">{content}</text></g>')
-        dx,dy=fit['translationNative'];groups.append(f'<g id="caption-{i}" class="clip" data-start="{cue["start"]}" data-duration="{cue["duration"]}" data-track-index="0"><g transform="translate({dx} {dy})">'+''.join(parts)+'</g></g>')
-    (job/'compositions').mkdir(exist_ok=True)
-    (job/'compositions/orange-ui.html').write_text(document('orange-ui',ui),encoding='utf-8');(job/'compositions/orange-captions.html').write_text(document('orange-captions',''.join(groups)),encoding='utf-8')
-    scaffold(job,font_styles);write(job/'captions-orange.json',cues)
-    write(job/'caption-fit.json',{'fontSizeChanged':False,'glyphAspectPreserved':True,'maxAllowedWidthNative':cap['max_width'],'changes':changes,'cues':fits})
+            k=math.tan(math.radians(cap['angle']));color='#FA98C3' if row else '#FFFFFF'
+            parts.append(f'<g transform="matrix({sx} 0 {-sx*k} {sy} {tx} {cap["baselines"][row]})"><text font-family="OrangeRounded" font-weight="700" font-size="{cap["font_size"]}" letter-spacing="{cap["tracking"]}" fill="{color}" stroke="#15100B" stroke-width="{cap["stroke"]}" stroke-linejoin="round" paint-order="stroke fill" style="text-shadow:0 4px 5px #0008">{content}</text></g>')
+        dx,dy=fit['translationNative']
+        groups.append(f'<g id="caption-{i}" class="clip" data-start="{cue["start"]}" data-duration="{cue["duration"]}" data-track-index="0"><g transform="translate({dx*916/1080} {dy*1717/1920})">'+''.join(parts)+'</g></g>')
+    (job/'compositions/orange-captions.html').write_text(document('orange-captions',''.join(groups)),encoding='utf-8')
+    scaffold(job,font_styles)
+    write(job/'captions-orange.json',cues)
+    write(job/'caption-fit.json',{'fontSizeChanged':False,'styleBasis':'approved-reference','maxAllowedWidthNative':cap['max_width'],'changes':changes,'cues':fits})
     def stamp(t):
         ms=round(t*1000);return f'{ms//3600000:02}:{ms//60000%60:02}:{ms//1000%60:02},{ms%1000:03}'
-    (job/'subtitles.srt').write_text('\n\n'.join(f'{i+1}\n{stamp(c["start"])} --> {stamp(c["end"])}\n'+'\n'.join(c['lines']) for i,c in enumerate(cues))+'\n',encoding='utf-8')
-    write(job/'template-layout.json',{'template':'fullscreen-orange','pictureOutput':[0,0,1080,1920],'captionBoxNative':placement,'chapterBoxesNative':chapter_boxes,'avatarOutput':avatars,'socialUIBurnedIn':False,'measuredUIProfiles':list(profiles)})
+    (job/'subtitles.srt').write_text('\n\n'.join(f'{i+1}\n{stamp(c["start"])} --> {stamp(c["end"])}\n'+ '\n'.join(c['lines']) for i,c in enumerate(cues))+'\n',encoding='utf-8')
+    write(job/'template-layout.json',{'template':'fullscreen-orange','pictureOutput':[0,0,1080,1920],'captionBoxNative':placement,'avatarOutput':avatars,'socialUIBurnedIn':False,'measuredUIProfiles':list(profiles)})
     return {'template':'fullscreen-orange','cueCount':len(cues),'reflowedGroups':len(changes),'placement':placement,'platformChecks':checks}
 
 

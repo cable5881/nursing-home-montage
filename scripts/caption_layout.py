@@ -22,12 +22,13 @@ class Typography:
             self.gs[glyph].draw(TransformPen(pen,(scale,0,k*scale,-scale,advance,0)))
             advance+=self.font['hmtx'][glyph][0]*scale+spec['tracking']
         b=pen.bounds or (0,-spec['font_size'],advance,0)
-        sx,sy=spec['scales'][row]
-        if abs(sx-sy)>1e-6:raise ValueError('字幕必须保持字形比例，不能使用横纵不等的缩放。')
-        tx=540-sx*(b[0]+b[2])/2;y=spec['baselines'][row]
-        # Include outline and shadow in collision checks, not the font em box.
+        sx,sy=spec['scales'][row];cw,ch=spec.get('measurement_canvas',[1080,1920])
+        # Reference SVG coordinates include canvas conversion. Judge the final pixel ratio.
+        if sx<=0 or sy<=0 or abs((sx*1080/cw)/(sy*1920/ch)-1)>.05:
+            raise ValueError('字幕必须保持字形比例，不能使用明显横纵不等的缩放。')
+        tx=cw/2-sx*(b[0]+b[2])/2;y=spec['baselines'][row]
         margin=max(6,spec['stroke']/2+1)
-        rect=[tx+sx*b[0]-margin,y+sy*b[1]-7,tx+sx*b[2]+margin,y+sy*b[3]+10]
+        rect=[(tx+sx*b[0]-margin)*1080/cw,(y+sy*b[1]-7)*1920/ch,(tx+sx*b[2]+margin)*1080/cw,(y+sy*b[3]+10)*1920/ch]
         return b,tx,rect
 
     def fits(self,text,focus='',row=0):
