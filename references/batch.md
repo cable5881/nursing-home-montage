@@ -29,3 +29,5 @@ uv run --python 3.11 SCRIPT/batch.py review-provider <批次> --item <任务ID> 
 每条计划包含 cover 和 publication，整批 start 在付费前核对身份署名、封面素材与五个话题并解析 CTA。cutouts 后统一执行 cover，再检查与渲染。review 后逐条打包发布 ZIP；包失败不能把该条标为 complete。每条独立冻结身份与选择，标题／标签／文案按各条混剪变化。
 
 交付清单增加封面、发布 ZIP 和钩子来源。旧引擎没有 cover 设置时跳过新阶段，继续旧流程；旧任务不会被新版强制补封面。
+
+批次start创建各job后，智能体逐条查看content-audit.json并执行montage.py review-content；未记录时voice会停止。批次run在每条voice前先执行preflight。

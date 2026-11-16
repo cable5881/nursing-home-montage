@@ -46,6 +46,10 @@ def save_patch(patch):
     cfg=merge(load(),patch);write(directory()/'project.json',cfg);return {'saved':True}
 def asset_path(value):
     if not value:return None
+    if str(value).startswith('skill:'):
+        p=(SKILL/str(value)[len('skill:'):]).resolve()
+        if not p.is_relative_to(SKILL.resolve()):raise ValueError('skill: 资源必须位于 skill 目录内。')
+        return p
     p=Path(value).expanduser();return p if p.is_absolute() else directory()/p
 def secret(ref):
     if not ref:return ''
@@ -98,6 +102,8 @@ def resolved(job):
     if frozen.exists():return read(frozen)['settings']
     cfg=load();plan=read(job/'plan.json') if (job/'plan.json').exists() else {}
     out=merge(read(SKILL/'preset.json'),cfg.get('settings',{}))
+    # Old project defaults migrate for new jobs; frozen runtimes return above unchanged.
+    if out.get('template',{}).get('id') in ('legacy-orange','orange','green'):out['template']={'id':'fullscreen-orange','overrides':{}}
     identifier=plan.get('person') or cfg.get('default_person')
     p=person(identifier) if identifier else None
     if p:
@@ -108,6 +114,8 @@ def resolved(job):
             'socialMediaName':p.get('social_media_name'),'coverPortrait':str(asset_path(p['cover_portrait'])) if p.get('cover_portrait') else None,
             'closingHooks':copy.deepcopy(p.get('closing_hooks',{}))}
     out=merge(out,plan.get('settings',{}))
+    for role,font in out.get('template',{}).get('overrides',{}).get('fonts',{}).items():
+        if font.get('file'):font['file']=str(asset_path(font['file']))
     conn=cfg['connections'].get(out.get('person',{}).get('connection'),{})
     out['service']={k:copy.deepcopy(conn[k]) for k in ('provider','storage','tts','avatar') if k in conn}
     out['service']['storage']=storage_settings(conn.get('storage'))
@@ -132,14 +140,35 @@ def freeze(job):
     job=Path(job);bound=job/'runtime.json'
     if bound.exists():return read(bound)
     cfg=resolved(job);person_asset=cfg['avatar'].get('portrait')
+    if cfg.get('music',{}).get('enabled'):
+        resource=cfg['music'].get('resource')
+        if not resource or not Path(resource).is_file():raise ValueError('默认或指定配乐不存在，请恢复 skill 音乐资源或明确关闭配乐。')
+        source=Path(resource);dest=job/'assets/music'/('source'+source.suffix.lower())
+        dest.parent.mkdir(parents=True,exist_ok=True)
+        if source.resolve()!=dest.resolve():shutil.copy2(source,dest)
+        cfg['music']['resource']=str(dest.resolve())
     if person_asset:
-        dest=job/'assets/person'/Path(person_asset).name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(person_asset,dest);cfg['avatar']['portrait']=str(dest.resolve())
+        dest=job/'assets/person'/Path(person_asset).name;dest.parent.mkdir(parents=True,exist_ok=True)
+        if Path(person_asset).resolve()!=dest.resolve():shutil.copy2(person_asset,dest)
+        cfg['avatar']['portrait']=str(dest.resolve())
     cover_asset=cfg.get('person',{}).get('coverPortrait')
     if cover_asset:
-        dest=job/'assets/person/cover-portrait.png';dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(cover_asset,dest)
+        dest=job/'assets/person/cover-portrait.png';dest.parent.mkdir(parents=True,exist_ok=True)
+        if Path(cover_asset).resolve()!=dest.resolve():shutil.copy2(cover_asset,dest)
         cfg['person']['coverPortrait']=str(dest.resolve())
     if cfg.get('cover',{}).get('image'):
-        source=Path(cfg['cover']['image']);dest=job/'assets/cover-input'/source.name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,dest);cfg['cover']['image']=str(dest.resolve())
+        source=Path(cfg['cover']['image']);dest=job/'assets/cover-input'/source.name;dest.parent.mkdir(parents=True,exist_ok=True)
+        if source.resolve()!=dest.resolve():shutil.copy2(source,dest)
+        cfg['cover']['image']=str(dest.resolve())
+    font_refs=[(cfg.get('typography',{}),'body_font','caption'),(cfg.get('cover',{}),'font','cover')]
+    font_refs.extend((value,'file','template-'+role) for role,value in cfg.get('template',{}).get('overrides',{}).get('fonts',{}).items())
+    for container,key,role in font_refs:
+        if not container.get(key):continue
+        source=Path(container[key]);dest=job/'assets/fonts'/('source-'+role+source.suffix)
+        if not source.is_file():raise ValueError('配置字体缺失：'+str(source))
+        dest.parent.mkdir(parents=True,exist_ok=True)
+        if source.resolve()!=dest.resolve():shutil.copyfile(source,dest)
+        container[key]=str(dest.resolve())
     plan=read(job/'plan.json') if (job/'plan.json').exists() else {}
     if plan.get('closingHookSelection'):cfg['closingHookSelection']=copy.deepcopy(plan['closingHookSelection'])
     files=runtime_files()
@@ -168,6 +197,11 @@ def engine_env(job):
     api,ak,sk=connection_keys(conn);env=os.environ.copy()
     # Explicit values prevent inherited keys from accidentally selecting another account.
     env.update(MONTAGE_PROJECT_ROOT=str(root()),MONTAGE_AVATAR_CONFIG=str(job/'avatar-engine.json'),VOLCANO_TTS_API_KEY=api,VOLC_ACCESSKEY=ak,VOLC_SECRETKEY=sk,MONTAGE_MANAGED_CREDENTIALS='1')
+    return env
+def render_env(job):
+    env=os.environ.copy();mode=resolved(job).get('render',{}).get('browser_sandbox','inherit')
+    if mode not in ('inherit','required','disabled'):raise ValueError('browser_sandbox 只接受 inherit/required/disabled。')
+    if mode!='inherit':env['HYPERFRAMES_CHROME_SANDBOX']='1' if mode=='required' else '0'
     return env
 def doctor():
     cfg=load();tools={k:bool(shutil.which(k)) for k in ('ffmpeg','ffprobe','node','npm','uv')};connections={}

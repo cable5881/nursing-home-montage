@@ -35,7 +35,7 @@ connections.main包含speech_key/access_key/secret_key引用、storage、clone_m
 
 storage 默认 `{"provider":"tmpfile"}`；无需填写其他字段。选择 TOS 使用 `{"provider":"tos","bucket":"用户存储桶","region":"cn-beijing","endpoint":"tos-cn-beijing.volces.com"}`。旧连接已有 bucket 但未写 provider 时继续按 TOS 处理，避免升级改变现有任务；明确切换时只改 storage.provider，保留原桶配置供以后选用。doctor 的 storage=true 仅代表配置齐全，不代表联网或数字人抓取已验证。
 
-字体默认包内Noto，适配各系统。项目可用settings.typography.body_font和collection_index指定自己的字体；settings.music.enabled/resource指定自己的配乐。当前没有内置通用配乐，缺音乐时可询问用户提供或接受无BGM；不借用其他用户的商业授权曲目。
+正文字幕默认包内霞鹜文楷，标题和标签默认包内 Noto；项目可用 settings.typography.body_font 和 collection_index 指定已确认字体。默认配乐和替换／关闭方式见[运行](runtime.md#默认配乐)，不依赖开发者电脑的资源路径。
 
 ## 身份与可选咨询钩子
 

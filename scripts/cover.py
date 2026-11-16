@@ -77,7 +77,9 @@ def prepare(job):
     if not avatar:
         portrait=Path(cfg['avatar']['portrait']);cache=Path(__import__('project_config').directory())/'people'/person['id']/'cover-cache'/sha(portrait)
         cache.mkdir(parents=True,exist_ok=True);avatar=cache/'portrait.png'
-        if not avatar.is_file():run([*hyperframes_cli(job),'remove-background',portrait,'-o',avatar,'--device','auto','--json'],cwd=job)
+        if not avatar.is_file():
+            from workflow import hyperframes
+            hyperframes(job,['remove-background',portrait,'-o',avatar,'--device','auto','--json'])
     avatar=Path(avatar);stream=next(s for s in probe(avatar)['streams'] if s['codec_type']=='video')
     # Normalize framing for newly derived people; explicit assets may preserve an approved box.
     avbox=person.get('coverBox')
@@ -103,7 +105,7 @@ def prepare(job):
     if cfg['cover'].get('image'):payload['provided_cover']=data_uri(cfg['cover']['image'])
     record={'template':'teal-adaptive','content':{k:v for k,v in payload.items() if k not in ('avatar','font','photos','provided_cover')},'sources':sources,'avatarSha256':sha(avatar),'fontSha256':sha(font),'imageGenerationUsed':False}
     record['inputFingerprint']=digest({'plan':plan.get('cover'),'identity':payload['identity'],'avatarBox':avbox,'institution':plan['institution']['name'],'header':payload['header_text'],'sources':sources,'avatar':record['avatarSha256'],'font':record['fontSha256'],
-        'provided':sha(cfg['cover']['image']) if cfg['cover'].get('image') else None,'layout':sha(SKILL/'assets/covers/teal-adaptive/layout.mjs'),'editor':sha(SKILL/'assets/covers/teal-adaptive/cover.html'),'renderer':sha(SKILL/'scripts/cover_renderer.mjs')})
+        'provided':sha(cfg['cover']['image']) if cfg['cover'].get('image') else None,'layout':sha(SKILL/'assets/covers/teal-adaptive/layout.mjs'),'editor':sha(SKILL/'assets/covers/teal-adaptive/cover.html'),'renderer':sha(SKILL/'scripts/cover_renderer.mjs'),'browserRuntime':sha(SKILL/'scripts/browser_runtime.mjs')})
     return cfg,payload,record
 
 def editor_html(payload):
@@ -119,7 +121,8 @@ def generate(job):
         return {'cover':str(out),'reused':True}
     (job/'cover-editor.html').write_text(editor_html(payload),encoding='utf-8')
     temp=job/'assets/cover/layout.json'
-    run(['node',SKILL/'scripts/cover_renderer.mjs',job/'cover-editor.html',out,temp,browser_package(cfg,job)])
+    import project_config as pc
+    run(['node',SKILL/'scripts/cover_renderer.mjs',job/'cover-editor.html',out,temp,browser_package(cfg,job)],env=pc.render_env(job))
     record['layout']=read(temp)
     if cfg['cover'].get('image'):
         image=Path(cfg['cover']['image']);meta=next(s for s in probe(image)['streams'] if s['codec_type']=='video')

@@ -1,13 +1,14 @@
 from pathlib import Path
 import hashlib,json,math,re
 from workflow import *
+from alignment import character_map,safe_boundary
 
 def find_font(cfg):
     override=cfg['typography'].get('body_font')
     if override:
         if not Path(override).is_file():raise ValueError('Configured body font missing')
         return Path(override)
-    return SKILL/'assets/NotoSansSC-Black.otf'
+    return SKILL/'assets/LXGWWenKai-Regular.ttf'
 def caption_parts(s):
     if s.get('captions'):return s['captions']
     parts=[p for p in re.split('[，,、；;：:。！？!?]',s['text']) if clean(p)]
@@ -23,11 +24,7 @@ def build(job):
     if sha(source)!=v['sha256'] or digest(text)!=v['textSha256']:raise RuntimeError('Stale voice; regenerate/realign before building')
     aligned=read(v['alignment'])
     if not aligned['passed'] or aligned['sha256']!=sha(source) or aligned['textSha256']!=digest(text):raise RuntimeError('Stale or failed word alignment')
-    chars=[]
-    words=[w for row in aligned['segments'] for w in row['words']]
-    for wi,w in enumerate(words):
-        letters=word_letters(w['word'],words[wi+1]['word'] if wi+1<len(words) else '')
-        for i,c in enumerate(letters):chars.append({'c':c,'start':w['start']+(w['end']-w['start'])*i/len(letters),'end':w['start']+(w['end']-w['start'])*(i+1)/len(letters)})
+    chars=character_map(aligned,text,clean,phonemes)
     canonical=clean(text)
     if phonemes(''.join(c['c'] for c in chars))!=phonemes(canonical) or len(chars)!=len(canonical):raise RuntimeError('Cannot map source words one-to-one; resolve the alignment discrepancy first')
     offset=cfg['voice']['start'];fps=cfg['video']['fps'];duration=v['duration'];total=math.ceil((duration+offset)*fps)/fps
@@ -46,6 +43,7 @@ def build(job):
         for c in caption_parts(s):
             n=len(clean(c['text']))
             if clean(c['text'])!=canonical[cursor:cursor+n]:raise ValueError('Caption draft dropped/changed words; edit the plan')
+            if not safe_boundary(chars,cursor) or not safe_boundary(chars,cursor+n):raise ValueError('字幕不能从数字内部切开；合并该数字所在字幕后重新 build，复用原配音。')
             cues.append({**c,'focus':c.get('focus',''),'start':round(chars[cursor]['start']+offset,4),'speechEnd':round(chars[cursor+n-1]['end']+offset,4),'canonicalRange':[cursor,cursor+n]});cursor+=n
     for i,c in enumerate(cues):
         next_start=cues[i+1]['start'] if i+1<len(cues) else total
@@ -74,10 +72,12 @@ def build(job):
             shot={'id':f'shot-{len(shots):02}','asset':str(dest.relative_to(job)),'start':st,'end':end,'duration':end-st,'sourceStart':src_start,'positionY':s.get('positionY',50),'description':s['description'],'sentenceIndex':si}
             shots.append(shot);ledger.append({'file':shot['asset'],'source':str(orig),'sha256':row['sha256'],'kind':row['kind'],'modified':False})
     write(job/'shot-list.json',shots);write(job/'asset-sources.json',ledger)
+    from content_review import shot_audit
+    shot_audit(job)
     (job/'source-description.txt').write_text(json.dumps(plan['institution'],ensure_ascii=False)+'\n'+(job/'source-text.txt').read_text(encoding='utf-8'), encoding='utf-8')
     inst=plan['institution'];reference=cfg['typography'].get('reference_identity')==inst and bool(cfg['typography'].get('reference_asset'))
     write(job/'institution.json',{**inst,'headerMode':'reference' if reference else 'dynamic'})
-    font=find_font(cfg);match=[{'family':'Project body font' if cfg['typography'].get('body_font') else 'Noto Sans SC Black','file':str(font),'index':cfg['typography']['collection_index'],'stroke':3,'angle':3,'tracking':4}]
+    font=find_font(cfg);match=[{'family':'Project body font' if cfg['typography'].get('body_font') else 'LXGW WenKai','file':str(font),'index':cfg['typography']['collection_index'],'stroke':1,'angle':0,'tracking':4}]
     write(job/'orange-font-match.json',match)
     # Fresh subsets must include the new institution and narration, not the previous project's glyph set.
     for f in ('OrangeRounded.woff2','OrangeLabel.woff2'):(job/'assets/fonts'/f).unlink(missing_ok=True)
@@ -112,15 +112,8 @@ def build(job):
     return {'duration':total,'shots':len(shots),'captions':len(read(job/'captions.json')),'avatarWindows':[[a['start'],a['start']+a['duration']] for a in avatars]}
 
 def compose(job):
-    cfg=settings(job);theme=cfg.get('template',{'id':'legacy-orange'})
-    ident=theme.get('id','legacy-orange')
-    if ident=='fullscreen-orange':
-        from compose_fullscreen import compose as compose_fullscreen
-        compose_fullscreen(job)
-    elif ident=='legacy-orange':
-        run([sys.executable,SKILL/'scripts/compose_orange.py',job])
-    else:
-        write(job/'template.json',{'id':ident,**theme.get('overrides',{})})
-        run([sys.executable,SKILL/'scripts/compose_reference.py',job,'--template',ident])
+    settings(job)
+    from compose_fullscreen import compose as compose_fullscreen
+    compose_fullscreen(job)
     from cover import attach
     attach(job)

@@ -46,7 +46,7 @@ def start(folder,reuse_scripts=False):
     data['phase']='ready';data['reuse_scripts']=reuse_scripts;write(folder/'batch.json',data);report(folder)
     return {'ready':True,'total':len(data['items']),'uniqueScripts':len(seen),'paidCalls':0}
 
-STEPS=['setup','voice','build','avatars','provider-review','cutouts','cover','carve','check','snapshot','render','verify','final-review']
+STEPS=['setup','preflight','voice','build','avatars','provider-review','cutouts','cover','carve','check','snapshot','render','verify','final-review']
 def invoke(job,action,extra=None):
     runtime=read(job/'runtime.json');script=Path(runtime['engine'])/'scripts/montage.py'
     args=['uv','run','--python','3.11',script,action,job]+(extra or [])

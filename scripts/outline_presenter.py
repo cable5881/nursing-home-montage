@@ -38,6 +38,12 @@ try:
         assert len(buf)==fw*fh*4
         rgba=np.frombuffer(buf,np.uint8).reshape(fh,fw,4).copy()
         alpha=rgba[:,:,3]
+        # Suppress low-confidence fringe without touching opaque face pixels.
+        alpha[:]=np.clip((alpha.astype(float)-14)*255/241,0,255).astype(np.uint8)
+        edge=alpha<220
+        purple=edge&(rgba[:,:,2].astype(int)>rgba[:,:,1].astype(int)+14)&(rgba[:,:,0].astype(int)>rgba[:,:,1].astype(int)+6)
+        luminance=(rgba[:,:,:3].astype(float)*[.2126,.7152,.0722]).sum(axis=2)
+        for channel in range(3):rgba[:,:,channel]=np.where(purple,rgba[:,:,channel]*.25+luminance*.75,rgba[:,:,channel]).astype(np.uint8)
         # Spatial smoothing only: preserve hair detail and avoid isolated flecks.
         mask=(alpha>80).astype(np.uint8)*255
         count,labels,stats,_=cv2.connectedComponentsWithStats(mask,8)
@@ -45,7 +51,7 @@ try:
             biggest=1+np.argmax(stats[1:,cv2.CC_STAT_AREA]);mask=np.where(labels==biggest,255,0).astype(np.uint8)
         mask=cv2.morphologyEx(mask,cv2.MORPH_CLOSE,np.ones((3,3),np.uint8))
         # Offset the contour outwards so dashes sit off the hair and jacket.
-        wide=cv2.dilate(np.pad(mask,((pad,pad),(pad,pad))),cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(13,13)))
+        wide=cv2.dilate(np.pad(mask,((pad,pad),(pad,pad))),cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(7,7)))
         contours,_=cv2.findContours(wide,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)
         line=Image.new('RGBA',(W,H),(0,0,0,0));draw=ImageDraw.Draw(line)
         if contours:
@@ -57,11 +63,11 @@ try:
                 ends=np.arange(at,min(at+9,dist[-1])+.01,1.2)
                 xx=np.interp(ends,dist,points[:,0]);yy=np.interp(ends,dist,points[:,1])
                 xy=[(float(x),float(y)) for x,y in zip(xx,yy) if y<H-46]
-                if len(xy)>1:draw.line(xy,fill=(255,255,255,245),width=2)
+                if len(xy)>1:draw.line(xy,fill=(255,255,255,105),width=1)
         actor=Image.new('RGBA',(W,H));actor.paste(Image.fromarray(rgba),(pad,pad))
         composed=Image.alpha_composite(line,actor)
         arr=np.array(composed)
-        fade=np.clip((H-10-np.arange(H))/50,0,1)
+        fade=np.clip((H-10-np.arange(H))/80,0,1);fade=fade*fade*(3-2*fade)
         arr[:,:,3]=(arr[:,:,3]*fade[:,None]).astype(np.uint8)
         encoder.stdin.write(arr.tobytes())
         if frames in (0,45,90,150):
@@ -73,6 +79,6 @@ finally:
 assert dc==0,derr
 assert ec==0,eerr
 assert frames>=math.floor(opts.min_seconds*30),frames
-report={'source':str(src),'output':str(OUT/'avatar-outlined.webm'),'frames':frames,'fps':30,'size':[W,H],'cropSource':[cx,cy,cw,ch],'alphaCoverageRange':[min(alpha_stats),max(alpha_stats)],'method':'local video matting, spatial contour offset, fixed white dashes and bottom alpha fade; no changes to face or speech timing'}
+report={'source':str(src),'output':str(OUT/'avatar-outlined.webm'),'frames':frames,'fps':30,'size':[W,H],'cropSource':[cx,cy,cw,ch],'alphaCoverageRange':[min(alpha_stats),max(alpha_stats)],'method':'edge-only purple spill suppression, low-opacity narrow contour and smooth bottom alpha fade; opaque face pixels and speech timing unchanged'}
 (OUT/'outline-verification.json').write_text(json.dumps(report,ensure_ascii=False,indent=2), encoding='utf-8')
 print(json.dumps(report,ensure_ascii=False,indent=2))

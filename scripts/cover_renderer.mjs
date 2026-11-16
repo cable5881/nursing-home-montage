@@ -3,18 +3,12 @@ import {createRequire} from 'node:module';
 import {readFile,writeFile} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 import path from 'node:path';
+import {acquireLockedBrowser} from './browser_runtime.mjs';
 const [htmlPath,pngPath,reportPath,hyperframesPackage]=process.argv.slice(2);
 if(!hyperframesPackage)throw new Error('Pass HTML, PNG, report and the locked HyperFrames package.json');
 const pkg=JSON.parse(await readFile(hyperframesPackage,'utf8'));
 if(pkg.name!=='hyperframes'||pkg.version!=='0.9.44')throw new Error('Cover requires HyperFrames 0.9.44 browser runtime');
-const require=createRequire(pathToFileURL(path.resolve(hyperframesPackage)));
-const puppeteer=require('puppeteer-core');
-const browsers=require('@puppeteer/browsers');
-const os=await import('node:os');
-const installed=await browsers.getInstalledBrowsers({cacheDir:path.join(os.homedir(),'.cache/puppeteer')});
-const chrome=installed.filter(b=>b.browser==='chrome').sort((a,b)=>b.buildId.localeCompare(a.buildId,undefined,{numeric:true}))[0];
-if(!chrome)throw new Error('No local Chromium; prepare the pinned HyperFrames browser before rendering');
-const browser=await puppeteer.launch({executablePath:chrome.executablePath,headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
+const lease=await acquireLockedBrowser(hyperframesPackage);const browser=lease.browser;
 try{
  const page=await browser.newPage();await page.setViewport({width:1400,height:1000,deviceScaleFactor:1});
  page.on('console',message=>{const t=message.text();if(t.startsWith('OTS parsing error'))process.stderr.write(t.slice(0,500)+'\n');});
@@ -27,4 +21,4 @@ try{
  const png=await page.evaluate(()=>window.coverApp.png());
  await writeFile(pngPath,Buffer.from(png.split(',')[1],'base64'));
  process.stdout.write(JSON.stringify({png:pngPath,layout:reportPath}));
-}finally{await browser.close();}
+}finally{await lease.close();}

@@ -49,7 +49,6 @@
   ],
   "asrPrompt":"仅提供机构专名、地名等识别提示，不粘贴整篇原稿",
   "settings": {
-    "template":{"id":"orange","overrides":{}},
     "closing_hook":{"enabled":true},
     "avatar":{"mode":"opening","x":48,"bottom":1500,"width":400,"height":550},
     "voice":{"speech_rate":-3}
@@ -65,9 +64,9 @@
 
 时长由完整配音及词级对齐计算。默认只为开头完整句生成数字人，中间和结尾没有人物；出镜窗口留少量音频边界，结束只补齐不足一个视频帧。`mode` 可显式选择 off/opening/closing/both，缺省opening。只有一句时不会为同一句重复生成两个数字人。最后一条默认必须kind=cta并配真实视频，见[结尾引导](closing-hooks.md)。
 
-可选设置依次继承 preset.json和用户项目settings；选择人物优先使用plan.person；更换人物用 settings.avatar.portrait（本地路径），表情用 settings.avatar.prompt，换音乐用 settings.music.resource（绝对本地路径，或.montage相对路径，并设置enabled=true）。语音发音规则使用 settings.voice.pronunciation_dict.tone。模板当前固定1080×1920/30fps；其他画幅须明确改编模板。
+可选设置依次继承 preset.json和用户项目settings；选择人物优先使用plan.person；更换人物用 settings.avatar.portrait（本地路径），表情用 settings.avatar.prompt。新任务默认配乐及替换／关闭方式见[默认配乐](runtime.md#默认配乐)。语音发音规则使用 settings.voice.pronunciation_dict.tone。模板当前固定1080×1920/30fps；其他画幅须明确改编模板。
 
-全屏橙色设置template.id=fullscreen-orange；完整UI测量配置见[平台UI避让](platform-ui.md)。build保存caption-characters.json供后续不改配音的重断句；compose测量含描边/阴影和放大重点词的实际宽度，保留已有语义分行及数字单位，不拆开“24小时”等组合。需要超过两行时按照已有核验时间拆cue，不猜测词序或语速。自动分行仍应结合实际快照审阅语义。用户给定的字体、具体平台截图、个人人物及钩子原文都保存在项目侧，不写死进通用模板。
+正文只有 fullscreen-orange，无需选择模板。完整UI测量见[平台UI避让](platform-ui.md)，字形和断句规则见[排版](templates.md)。build保存 caption-characters.json；数字拆词按完整数值归一化，数字组只保留实际时间区间，不能从组内切 cue。自动断句仍需结合实际帧核对语义。
 
 ## 封面与发布字段
 
@@ -99,3 +98,7 @@ settings.cover.image 可指定现成封面（本机绝对路径或 .montage 相�
 本次钩子覆盖可用 settings.closing_hook.text 或 hook_id（二者择一），或直接写末句 CTA；留空 CTA text 时可选人物默认或项目咨询兜底，分镜仍必填。选择与来源保存 closingHookSelection，并随 runtime 冻结，不另增钩子清单文件。
 
 publication 由智能体根据本条内容撰写，不要求用户填写。topics 恰好五个不同话题，包含或不含开头 # 均可，不能有空格。发布包需要封面和编辑 HTML；用户明确只要视频时可本次 settings.delivery.enabled=false，避免强制打包。
+
+## 标题与发布事实复核
+
+封面数字标签可加 `factIds:["f2"]`，publication顶层加共享 `factIds:["f2","f3"]`，引用当前facts原文。可选topic记录titlePromise和mainSentenceIndexes，shots.match说明直接展示或环境铺垫。validate-plan生成content-audit.json，按[内容复核](content-review.md)查看后再review-content；结构检查不替代语义核验。

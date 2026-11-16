@@ -23,12 +23,12 @@ def pcm_sha(path):return hashlib.sha256(run(['ffmpeg','-v','error','-i',path,'-v
 def settings(job):
     cfg=pc.resolved(job)
     if cfg['video']!={'width':1080,'height':1920,'fps':30}:raise ValueError('This approved template is 1080x1920 at 30fps; another format requires adapting its composition first')
-    ident=cfg.get('template',{}).get('id','legacy-orange')
-    if ident not in ('legacy-orange','orange','green','fullscreen-orange'):raise ValueError('Unknown template; choose legacy-orange, fullscreen-orange, orange or green')
+    ident=cfg.get('template',{}).get('id','fullscreen-orange')
+    if ident!='fullscreen-orange':raise ValueError('新版只提供 fullscreen-orange；旧任务用冻结引擎继续，升级外观请用 revise 另存新版本。')
     for role,font in cfg.get('template',{}).get('overrides',{}).get('fonts',{}).items():
         if font.get('file') and not Path(font['file']).is_file():raise ValueError('Template font is missing; fix the project font reference before production: '+role)
     a=cfg['avatar']
-    min_y,max_y=(0,1920) if ident=='fullscreen-orange' else (479,1506)
+    min_y,max_y=0,1920
     if a['width']<=0 or a['height']<=0 or a['x']<0 or a['x']+a['width']>1080 or a['bottom']>max_y or a['bottom']-a['height']<min_y:raise ValueError('Presenter must stay inside the real-footage region above captions')
     return cfg
 def hyperframes_cli(job):
@@ -39,6 +39,8 @@ def hyperframes_cli(job):
     package=next((p/'package.json' for p in entry.parents if (p/'package.json').is_file() and read(p/'package.json').get('name')=='hyperframes'),None)
     if not package or read(package)['version']!=cfg['render']['cli_version']:raise ValueError('Configured HyperFrames CLI does not match the pinned version')
     return ['node',str(entry)]
+def hyperframes(job,args,cwd=None,check=True):
+    return run([*hyperframes_cli(job),*args],cwd=cwd or job,check=check,env=pc.render_env(job))
 def state(job,**fields):
     old=read(job/'state.json') if (job/'state.json').exists() else {}
     old.update(fields);write(job/'state.json',old);return old
@@ -168,6 +170,8 @@ def validate_plan(job):
     # Quotations prove provenance, not the truth of an arbitrary paraphrase; SKILL.md requires semantic source review.
     (job/'narration.txt').write_text('\n'.join(s['text'] for s in plan['sentences'])+'\n', encoding='utf-8')
     write(job/'plan.json',plan)
+    from content_review import audit
+    audit(job)
     return plan,files
 
 def engine_env(job):return pc.engine_env(job)
@@ -177,7 +181,10 @@ def engine(job,args,service='speech'):
     return run(['uv','run','--python','3.11',script,*args],env=engine_env(job),check=False)
 def setup(job,install=False):
     job.mkdir(parents=True,exist_ok=True);settings(job);pc.freeze(job)
-    cfg=settings(job);template=SKILL/'assets/orange-template'
+    cfg=settings(job);template=SKILL/'assets/render-project'
+    if (job/'orange-font-match.json').is_file():
+        matches=read(job/'orange-font-match.json');matches[0].update(file=cfg['typography'].get('body_font') or str(SKILL/'assets/LXGWWenKai-Regular.ttf'),index=cfg['typography'].get('collection_index'))
+        write(job/'orange-font-match.json',matches)
     for name in ('package.json','package-lock.json','hyperframes.json'):copy_asset(template/name,job/name)
     (job/'assets/fonts').mkdir(parents=True,exist_ok=True);(job/'assets/reference').mkdir(exist_ok=True)
     copy_asset(SKILL/'assets/gsap.min.js',job/'assets/gsap.min.js')
@@ -216,11 +223,20 @@ def align_audio(audio,text,out,cfg,prompt=''):
     recognized=''.join(r['text'] for r in rows);a,b=phonemes(text),phonemes(recognized)
     diff=[{'op':tag,'expected':a[x:y],'recognized':b[u:v]} for tag,x,y,u,v in difflib.SequenceMatcher(None,a,b,autojunk=False).get_opcodes() if tag!='equal']
     result={'sha256':sha(audio),'textSha256':digest(text),'expected':text,'recognized':recognized,'differences':diff,'passed':bool(a) and not diff,'method':'local faster-whisper medium word alignment with simplified Chinese and numeral normalization','humanListeningPerformed':False,'segments':rows}
+    if not diff:
+        from alignment import character_map
+        try:
+            character_map(result,text,clean,phonemes);result['numericMapping']={'passed':True,'method':'joined numeric tokens with measured group intervals'}
+        except ValueError as error:
+            result['numericMapping']={'passed':False,'error':str(error)};result['passed']=False
     write(cached,result)
-    if diff:raise RuntimeError('Speech content needs review; see '+str(cached))
+    if not result['passed']:raise RuntimeError('Speech content or numeric timing needs review; see '+str(cached))
     return result
 def voice(job,reuse=None):
     plan,_=validate_plan(job);setup(job);cfg=settings(job);
+    from preflight import require_preflight
+    from content_review import require_review
+    require_preflight(job);require_review(job)
     if not cfg['voice'].get('speaker'):raise ValueError('请先选择已就绪的数字人，或为该人物完成音色复刻。')
     text=(job/'narration.txt').read_text(encoding='utf-8').strip();out=job/'runs/voice'
     key=digest({'text':text,'tts':read(job/'avatar-engine.json')['tts'],'connection':cfg.get('person',{}).get('connection'),'project':str(project_root())})

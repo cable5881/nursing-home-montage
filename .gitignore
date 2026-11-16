@@ -10,3 +10,4 @@ renders/
 *.mp4
 *.wav
 *.mp3
+!assets/music/Tenderness_Benjamin_Tissot_original.mp3

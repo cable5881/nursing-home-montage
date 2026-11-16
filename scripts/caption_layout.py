@@ -22,10 +22,12 @@ class Typography:
             self.gs[glyph].draw(TransformPen(pen,(scale,0,k*scale,-scale,advance,0)))
             advance+=self.font['hmtx'][glyph][0]*scale+spec['tracking']
         b=pen.bounds or (0,-spec['font_size'],advance,0)
-        sx,sy=spec['scales'][row];tx=458-sx*(b[0]+b[2])/2;y=spec['baselines'][row]
+        sx,sy=spec['scales'][row]
+        if abs(sx-sy)>1e-6:raise ValueError('字幕必须保持字形比例，不能使用横纵不等的缩放。')
+        tx=540-sx*(b[0]+b[2])/2;y=spec['baselines'][row]
         # Include outline and shadow in collision checks, not the font em box.
         margin=max(6,spec['stroke']/2+1)
-        rect=[(tx+sx*b[0]-margin)*1080/916,(y+sy*b[1]-7)*1920/1717,(tx+sx*b[2]+margin)*1080/916,(y+sy*b[3]+10)*1920/1717]
+        rect=[tx+sx*b[0]-margin,y+sy*b[1]-7,tx+sx*b[2]+margin,y+sy*b[3]+10]
         return b,tx,rect
 
     def fits(self,text,focus='',row=0):
@@ -35,7 +37,7 @@ class Typography:
 
 def boundaries(text,focus):
     blocked=set()
-    spans=[m.span() for m in re.finditer(r'[0-9]+(?:\.[0-9]+)?(?:小时|分钟|秒|天|年|月|家|岁|万|元|米|%|％)?',text)]
+    spans=[m.span() for m in re.finditer(r'[0-9零〇一二两三四五六七八九十百千万亿点]+(?:平方米|养老床位|张床位|小时|分钟|号线|平方|公里|床位|秒|天|年|月|家|岁|万|元|米|㎡|%|％)?',text)]
     if focus:
         start=text.find(focus)
         if start>=0:spans.append((start,start+len(focus)))
@@ -88,6 +90,8 @@ def reflow(cues, typography, clean, character_times=None):
             for i in range(0,len(chunks),2):
                 lines=chunks[i:i+2];count=len(clean(''.join(lines)))
                 p=copy.deepcopy(cue);p.update(text=''.join(lines),lines=lines,canonicalRange=[cursor,cursor+count])
+                from alignment import safe_boundary
+                if not safe_boundary(character_times,cursor) or not safe_boundary(character_times,cursor+count):raise ValueError('字幕拆分切入数字时间组，请调整语义分组，不能猜测数字内部时间。')
                 p['start']=cue['start'] if not pieces else character_times[cursor]['start']
                 p['speechEnd']=character_times[cursor+count-1]['end']
                 pieces.append(p);cursor+=count

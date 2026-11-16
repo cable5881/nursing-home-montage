@@ -6,6 +6,8 @@ from build_job import compose
 
 def avatars(job,wait_seconds=45):
     setup(job);cfg=settings(job);pending=[];completed=[]
+    from preflight import require_preflight
+    require_preflight(job)
     for a in read(job/'avatars.json'):
         audio=job/a['audio'];e=read(job/'avatar-engine.json');portrait=Path(e['image'])
         key=digest({'pcm':pcm_sha(audio),'portrait':sha(portrait),'avatar':e['avatar'],'resource':e['avatar']['req_key'],'connection':cfg.get('person',{}).get('connection'),'project':str(project_root())})
@@ -58,7 +60,7 @@ def cutouts(job):
         # Frame rate conversion only. Audio, speech speed and pitch are untouched.
         normalized=folder/'presenter-cfr.mkv'
         run(['ffmpeg','-y','-v','error','-i',record['video'],'-t',a['duration'],'-vf','fps=30','-an','-c:v','ffv1',normalized])
-        run([*hyperframes_cli(job),'remove-background',normalized,'-o',folder/'avatar-matte.mov','--device','auto','--json'],cwd=job)
+        hyperframes(job,['remove-background',normalized,'-o',folder/'avatar-matte.mov','--device','auto','--json'])
         run(['uv','run','--python','3.11',SKILL/'scripts/outline_presenter.py','--project',job,'--asset-dir',str(folder.relative_to(job)),'--min-seconds',str(max(.1,a['duration']-1/30))],cwd=job)
         c={'cacheKey':key,'file':str(target),'sha256':sha(target)};write(folder/'cutout-source.json',c);write(cache,c);results.append(str(target))
     compose(job);state(job,phase='composed',next='carve, check and inspect snapshots')
@@ -70,7 +72,7 @@ def review_provider(job,frames,note):
         path=job/'assets'/('avatar-'+a['id'])/'generation-source.json';record=read(path)
         known={str(Path(p).resolve()) for p in record['visualReviewFrames']}
         selected=[str(Path(p).resolve()) for p in frames if str(Path(p).resolve()) in known]
-        if not selected:raise ValueError('每个首尾数字人都需至少一张实际原片帧：'+a['id'])
+        if not known.issubset(set(selected)):raise ValueError('每个数字人的原片首、中、尾检查帧都需查看并记录：'+a['id'])
         if sha(record['video'])!=record['videoSha256']:raise ValueError('原片已变化，需重新核验。')
         record.update(visualReviewPending=False,visualReview={'frames':selected,'note':note,'sha256':record['videoSha256']})
         write(path,record);write(project_root()/'作品/.montage-cache/avatar'/f'{record["cacheKey"]}.json',record)
@@ -104,21 +106,31 @@ def require_cutouts(job):
 def check(job):
     from cover import require_current
     require_current(job)
-    require_cutouts(job);r=run([*hyperframes_cli(job),'check','--json'],cwd=job,check=False)
+    require_cutouts(job);r=hyperframes(job,['check','--json'],check=False)
     (job/'check.log').write_text(r.stdout+'\n'+r.stderr, encoding='utf-8')
     try:d=json.JSONDecoder().raw_decode(r.stdout[r.stdout.index('{'):])[0]
     except (ValueError,json.JSONDecodeError):raise RuntimeError('Check did not return JSON; see check.log')
     d['inputFingerprint']=input_fingerprint(job);write(job/'check.json',d)
-    if r.returncode or not d.get('ok'):raise RuntimeError('Composition check failed; inspect check.json')
+    if r.returncode or not d.get('ok'):
+        section=next((k for k in ('runtime','layout','lint','contrast','audio') if d.get(k,{}).get('errorCount',0)), 'runtime')
+        findings=d.get(section,{}).get('findings',[]);message=next((f.get('message','') for f in findings if f.get('severity')=='error'), '检查未完成')
+        raise RuntimeError(('浏览器运行环境不可用' if d.get('browserSkipped') else section+' 检查失败')+'：'+message+'；查看 check.json/check.log。')
     return {'ok':True,'warnings':{k:v.get('warningCount') for k,v in d.items() if isinstance(v,dict) and v.get('warningCount')}}
 def snapshot(job,times=None):
     total=read(job/'natural-timeline.json')['duration'];avatars=read(job/'avatars.json')
     if not times:
-        points=[0,1/30,.6,total/2,total-1/30]
-        for a in avatars:points.extend([a['start']+min(.6,a['duration']/2),a['start']+a['duration']/2])
+        points=review_times(job,total)
         times=','.join(str(t) for t in sorted(set(max(0,min(total-1/30,x)) for x in points)))
-    r=run([*hyperframes_cli(job),'snapshot','--at',times,'--no-end','--output','qc-layout'],cwd=job)
+    r=hyperframes(job,['snapshot','--at',times,'--no-end','--output','qc-layout'])
     return {'output':str(job/'qc-layout'),'result':r.stdout[-2200:]}
+def review_times(job,total):
+    points=[0,1/30,.6,total/2,total-1/30]
+    for name in ('shot-list.json','captions.json'):
+        if (job/name).is_file():
+            for row in read(job/name):points.append((row['start']+row.get('end',row['start']+row.get('duration',0)))/2)
+    for a in read(job/'avatars.json'):
+        points.extend([a['start']+min(.6,a['duration']/2),a['start']+a['duration']/2,a['start']+a['duration']-1/30])
+    return sorted(set(round(max(0,min(total-1/30,t))*30)/30 for t in points))
 def contrast_review(job,frames,note):
     c=read(job/'check.json');fingerprint=input_fingerprint(job)
     if c.get('inputFingerprint')!=fingerprint:raise ValueError('Layout changed; run the complete check again')
@@ -147,7 +159,7 @@ def render(job):
     require_cutouts(job);c=read(job/'check.json') if (job/'check.json').exists() else {}
     if not accepted_check(job,c):check(job)
     cfg=settings(job);out=job/'renders/final.mp4';out.parent.mkdir(exist_ok=True)
-    r=run([*hyperframes_cli(job),'render','--quality','delivery','--crf',str(cfg['render']['crf']),'--fps','30','--workers',str(cfg['render']['workers']),'--output',out],cwd=job,check=False)
+    r=hyperframes(job,['render','--quality','delivery','--crf',str(cfg['render']['crf']),'--fps','30','--workers',str(cfg['render']['workers']),'--output',out],check=False)
     (job/'render.log').write_text(r.stdout+'\n'+r.stderr, encoding='utf-8')
     if r.returncode:raise RuntimeError('Render failed; see render.log')
     state(job,phase='rendered',video=str(out),next='verify, inspect actual rendered frames, review')
@@ -171,13 +183,15 @@ def verify(job):
     black=run(['ffmpeg','-hide_banner','-i',video,'-vf',f'crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]},blackdetect=d=0.06:pix_th=0.1:pic_th=0.98','-an','-f','null','-']).stderr
     events=[s for s in black.splitlines() if 'black_start:' in s]
     if events:raise RuntimeError('Black frames in actual footage: '+str(events))
-    qc=job/'qc-final';qc.mkdir(exist_ok=True);times=[0,1/30,.6,total/2,total-1/30]
-    for a in read(job/'avatars.json'):times.extend([a['start']+min(.6,a['duration']/2),a['start']+a['duration']/2,a['start']+a['duration']-1/30])
+    qc=job/'qc-final';qc.mkdir(exist_ok=True);times=review_times(job,total)
     frames=[]
     for i,t in enumerate(sorted(set(max(0,min(total-1/30,x)) for x in times))):
         out=qc/f'frame-{i:02}-{t:.3f}s.png';run(['ffmpeg','-y','-v','error','-ss',t,'-i',video,'-frames:v','1',out]);frames.append(str(out))
     report={'video':str(video),'sha256':sha(video),'duration':float(m['format']['duration']),'frames':round(total*30),'width':1080,'height':1920,'fps':30,'audio':lev,'tailAfterAudio':tail,'fullDecode':True,'centralFootageBlackEvents':events,'renderedReviewFrames':frames,'visualReviewPending':True,'humanListeningPerformed':False}
-    report['footageBlackCheckCrop']=crop;report['template']=settings(job).get('template',{}).get('id','legacy-orange')
+    report['footageBlackCheckCrop']=crop;report['template']='fullscreen-orange'
+    report['reviewCoverage']={'shots':len(read(job/'shot-list.json')),'captions':len(read(job/'captions.json')),'allSampleFramesRequired':True}
+    report['reviewStatus']={'speechContent':'independent-ASR','listening':'not-recorded','visualLipSync':'not-recorded','providerAudioAlignment':'separate-from-visual-lip-sync'}
+    music=read(job/'bgm-timeline.json');report['music']={'enabled':music.get('enabled',False),'audio':music.get('audio'),'sourceFrozen':bool(settings(job).get('music',{}).get('resource'))}
     report['avatarWindows']=[{'id':a['id'],'start':a['start'],'end':a['start']+a['duration']} for a in read(job/'avatars.json')]
     if settings(job).get('cover',{}).get('enabled'):
         from cover import require_current
@@ -194,15 +208,19 @@ def verify(job):
     if checks.get('visualContrastReview'):report['visualContrastReview']=checks['visualContrastReview']
     write(job/'verification.json',report);state(job,phase='verified_visual_review_pending',next='View renderedReviewFrames, then review')
     return report
-def review(job,frames,note):
+def review(job,frames,note,listening_note=None,motion_note=None):
     report=read(job/'verification.json');video=Path(report['video'])
     if sha(video)!=report['sha256']:raise RuntimeError('Render changed; verify and inspect it again')
     if not note.strip() or not frames:raise ValueError('Record actual inspected frames and concrete findings')
     known=set(report['renderedReviewFrames'])
     frames=[str(Path(p).resolve()) for p in frames]
     if any(str(Path(p).resolve()) not in known for p in frames):raise ValueError('Review evidence must be from this verified render')
+    if report.get('reviewCoverage',{}).get('allSampleFramesRequired') and not known.issubset(set(frames)):raise ValueError('请查看并记录所有逐镜／字幕检查帧；缺失 '+str(len(known-set(frames)))+' 张。')
     if settings(job).get('cover',{}).get('enabled') and not set(report['renderedReviewFrames'][:2]).issubset(set(map(str,frames))):raise ValueError('请查看并记录封面首帧与正文次帧')
     report.update(visualReviewPending=False,visualReview={'frames':frames,'note':note,'videoSha256':report['sha256']});write(job/'verification.json',report)
+    if listening_note:report.setdefault('reviewStatus',{})['listening']={'note':listening_note,'humanListeningClaimed':False}
+    if motion_note:report.setdefault('reviewStatus',{})['visualLipSync']={'note':motion_note,'inferredFromAudioCorrelation':False}
+    write(job/'verification.json',report)
     final=job/'final.mp4';copy_asset(video,final)
     result={'video':str(final),'duration':report['duration'],'sha256':report['sha256']}
     if settings(job).get('delivery',{}).get('enabled'):

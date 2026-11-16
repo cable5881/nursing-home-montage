@@ -1,7 +1,7 @@
 {
   "version": 1,
   "template": {
-    "id": "legacy-orange",
+    "id": "fullscreen-orange",
     "overrides": {}
   },
   "closing_hook": {
@@ -36,18 +36,19 @@
     "sentence_padding": 0.1
   },
   "music": {
-    "resource": null,
+    "resource": "skill:assets/music/Tenderness_Benjamin_Tissot_original.mp3",
     "static_gain_db": -19.47,
     "speech_gain_db": 5.583624920952497,
     "carve_strength": 0.8,
     "fade_in": 0.4,
     "fade_out": 0.24,
-    "enabled": false
+    "enabled": true
   },
   "render": {
     "cli_version": "0.9.44",
     "crf": 14,
-    "workers": 4
+    "workers": 4,
+    "browser_sandbox": "inherit"
   },
   "alignment": {
     "model": "medium",
@@ -55,7 +56,7 @@
     "threads": 6
   },
   "typography": {
-    "body_font": null,
+    "body_font": "skill:assets/LXGWWenKai-Regular.ttf",
     "collection_index": null,
     "reference_asset": null,
     "reference_identity": null
