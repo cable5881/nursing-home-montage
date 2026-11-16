@@ -28,6 +28,12 @@ v2.2.0新增全屏橙色模板（fullscreen-orange）：无上下模板黑底、
 
 入口：[SKILL.md](SKILL.md)。初始化：[onboarding](references/onboarding.md)；批次：[batch](references/batch.md)；更新：[updates](references/updates.md)。本仓库不包含任何用户的凭据或客户素材。
 
+## 默认发布包
+
+新片默认生成 C 款青绿自适应封面，并只合入视频首帧。每个数字人与一个社媒名绑定，新增人物可自填或选择咨询钩子。用自然语言提供机构素材、人物和数量即可；数字人／服务配置在项目内保存。
+
+每条交付“数字人名_封面标题.zip”，包含同名 MP4、封面 PNG、发布标题／描述／五个话题 TXT，以及可离线换图改字并导出 PNG 的 HTML。内部生产记录保留在作品目录。详见 [运行与交付](references/runtime.md)、[封面](references/covers.md)、[咨询钩子](references/closing-hooks.md)。
+
 ## 开发验证
 
 需要Python 3.11、uv、Node/npm、FFmpeg。技能执行时自动声明Python依赖，渲染固定HyperFrames0.9.44。已进行macOS本地验证；Windows/Linux路径与凭据采用通用实现，尚无完整平台实机验收记录。

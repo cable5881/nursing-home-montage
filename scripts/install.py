@@ -20,7 +20,9 @@ def install(project,repository='https://github.com/cable5881/nursing-home-montag
         source=Path(tmp)/'skill';run(['git','clone','--depth','1','--branch',version,repository,source])
         manifest=json.loads((source/'release.json').read_text(encoding='utf-8'))
         if manifest['config_schema']!=1:raise ValueError('此发行版需要配置迁移，保留原安装；请先执行发行版的迁移说明。')
-        for name in ('SKILL.md','scripts/montage.py','scripts/project.py','preset.json'):
+        required=['SKILL.md','scripts/montage.py','scripts/project.py','preset.json']
+        if semver(version)>=(2,3,0):required+=['scripts/cover.py','scripts/cover_renderer.mjs','scripts/delivery.py','assets/covers/teal-adaptive/cover.html','assets/covers/teal-adaptive/layout.mjs','references/covers.md']
+        for name in required:
             if not (source/name).is_file():raise ValueError('发行包不完整')
         if (source/'.montage').exists():raise ValueError('发行包错误地包含用户配置')
         # Retain previous code before replacement; frozen jobs retain their own engines as well.

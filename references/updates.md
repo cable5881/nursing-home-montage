@@ -21,3 +21,9 @@ uv run --python 3.11 scripts/test_portable.py
 ```
 
 本地离线回归：`uv run --python 3.11 scripts/regression.py --baseline <认可工程> --reference-video <认可视频> --out <新目录>`，不调用voice/avatars。baseline媒体只读引用，字体使用私有副本；比对关键帧、音轨及完整文件指纹。参考机构标题从用户项目配置读取，不将客户夹具打进仓库。
+
+## v2.3.0 兼容与验证
+
+配置 schema 继续为 1，新增 cover、delivery 和人物 social_media_name／cover_portrait／closing_hooks。缺社媒名只在新任务需要时补齐，不自动猜测；旧配置不重写，已冻结任务使用原引擎。旧共享钩子保留，不自动分发给其他人物。
+
+发行包需包含共享封面布局、HTML、离线渲染和发布包脚本；安装前检查完整性。维护先运行 test_portable.py、test_cover.py 和 skill 校验，再用私有标准 demo 离线回归（不发起声音或数字人服务），提交后推送 main 和 v2.3.0 稳定 tag，最后从远程安装到临时项目验证。个人图像、社媒名、客户实图、音色和凭据不提交；私有 demo 和回归记录留项目。

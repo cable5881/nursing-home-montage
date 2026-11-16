@@ -36,7 +36,8 @@ def start(folder,reuse_scripts=False):
         if (job/'plan.json').exists() and read(job/'plan.json')!=plan:raise ValueError('已启动的任务文案被修改，请新建批次。')
         write(job/'plan.json',plan)
         for f in ('inventory.json','source-text.txt'):shutil.copy2(folder/f,job/f)
-        validate_plan(job)
+        plan,_=validate_plan(job)
+        write(plan_path,plan)
         content='\n'.join(s['text'] for s in plan['sentences']);h=hashlib.sha256(content.encode()).hexdigest()
         if h in seen and not reuse_scripts:raise ValueError('本批存在相同文案；默认每条不同，明确允许共享脚本时才使用--reuse-scripts。')
         seen.add(h);prepared.append((row,job))
@@ -45,7 +46,7 @@ def start(folder,reuse_scripts=False):
     data['phase']='ready';data['reuse_scripts']=reuse_scripts;write(folder/'batch.json',data);report(folder)
     return {'ready':True,'total':len(data['items']),'uniqueScripts':len(seen),'paidCalls':0}
 
-STEPS=['setup','voice','build','avatars','provider-review','cutouts','carve','check','snapshot','render','verify','final-review']
+STEPS=['setup','voice','build','avatars','provider-review','cutouts','cover','carve','check','snapshot','render','verify','final-review']
 def invoke(job,action,extra=None):
     runtime=read(job/'runtime.json');script=Path(runtime['engine'])/'scripts/montage.py'
     args=['uv','run','--python','3.11',script,action,job]+(extra or [])
@@ -69,6 +70,7 @@ def tick(folder,limit=4,retry_failed=False):
         was_pending=row['phase']=='pending';job=folder/row['job'];processed+=1
         for step in STEPS:
             if step in row['steps']:continue
+            if step=='cover' and (job/'runtime.json').is_file() and not read(job/'runtime.json')['settings'].get('cover',{}).get('enabled'):row['steps'].append(step);continue
             if step=='provider-review':
                 # No avatars mode needs no provider review.
                 if not read(job/'avatars.json'):row['steps'].append(step);continue
@@ -96,7 +98,9 @@ def reviewed(folder,identifier,frames,note,provider=False):
     action='review-provider' if provider else 'review';code,result=invoke(job,action,['--frames',*frames,'--note',note])
     if code:raise ValueError(result)
     row['steps'].append('provider-review' if provider else 'final-review');row['phase']='ready' if provider else 'complete';row['lastResult']=result
-    if not provider:row['delivery']=str((job/'final.mp4').resolve())
+    if not provider:
+        row['delivery']=str((job/'final.mp4').resolve())
+        if (job/'delivery.json').is_file():row['publishPackage']=read(job/'delivery.json')['zip']
     data['phase']='complete' if all(r['phase']=='complete' for r in data['items']) else 'in_progress'
     write(folder/'batch.json',data);return report(folder)
 
@@ -104,8 +108,10 @@ def report(folder):
     data=read(folder/'batch.json');summary={}
     for r in data['items']:summary[r['phase']]=summary.get(r['phase'],0)+1
     with (folder/'交付清单.csv').open('w',encoding='utf-8-sig',newline='') as f:
-        writer=csv.writer(f);writer.writerow(['任务','数字人','序号','状态','成片'])
-        for r in data['items']:writer.writerow([r['id'],r['personName'],r['number'],r['phase'],r.get('delivery','')])
+        writer=csv.writer(f);writer.writerow(['任务','数字人','序号','状态','成片','封面','发布包','钩子来源'])
+        for r in data['items']:
+            job=folder/r['job'];plan=read(job/'plan.json') if (job/'plan.json').is_file() else {}
+            writer.writerow([r['id'],r['personName'],r['number'],r['phase'],r.get('delivery',''),str(job/'cover.png') if (job/'cover.png').is_file() else '',r.get('publishPackage',''),plan.get('closingHookSelection',{}).get('source','')])
     return {'batch':str(folder),'total':len(data['items']),'summary':summary,'manifest':str(folder/'交付清单.csv'),'reviewNeeded':[{'id':r['id'],'phase':r['phase'],'job':str(folder/r['job'])} for r in data['items'] if r['phase'] in ('provider_review','final_review')],'excludedUnreadyPeople':data['excludedUnreadyPeople']}
 
 def main():

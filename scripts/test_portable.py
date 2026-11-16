@@ -14,6 +14,7 @@ class PortableTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
         self.env=patch.dict(os.environ,{'MONTAGE_PROJECT_ROOT':str(self.root)});self.env.start();pc.init()
+        pc.save_patch({'settings':{'cover':{'enabled':False},'delivery':{'enabled':False}}})
         pc.store_connection('main',{'api_key':'fixture-api','ak':'fixture-ak','sk':'fixture-sk','bucket':'fixture','region':'cn-beijing','endpoint':'tos-cn-beijing.volces.com'})
     def tearDown(self):self.env.stop();self.temp.cleanup()
     def people(self,n=1,ready=True):
@@ -225,5 +226,52 @@ class PortableTests(unittest.TestCase):
             if child.poll() is None:child.terminate()
             child.wait(timeout=10)
             log.close()
+
+    def test_identity_and_hooks_survive_freeze_without_cross_person_use(self):
+        self.people(2)
+        people.identity('p00',{'social_media_name':'甲带你看','closing_hooks':{'default_id':'visit','library':{'visit':{'text':'留言咨询居住安排。'}}}})
+        job=self.job();write(job/'plan.json',{'person':'p00','settings':{}})
+        frozen=pc.freeze(job);people.identity('p00',{'social_media_name':'修改后的名字'})
+        self.assertEqual(settings(job)['person']['socialMediaName'],'甲带你看')
+        plan={'sentences':[{'kind':'cta','text':''}],'settings':{}}
+        result=people.closing_hook(plan,frozen['settings']);self.assertEqual(result['source'],'person-default')
+        plan['settings']={'closing_hook':{'hook_id':'visit'}}
+        cfg=copy.deepcopy(frozen['settings']);cfg['person']['id']='p01';cfg['person']['closingHooks']={}
+        with self.assertRaisesRegex(ValueError,'不属于'):people.closing_hook(plan,cfg)
+
+    def test_hook_priority_disable_and_empty_optional_library(self):
+        cfg={'person':{'id':'a','closingHooks':{'default_id':'d','library':{'d':{'text':'个人默认咨询。'}}}},'closing_hook':{'enabled':True,'keyword':'养老'}}
+        plan={'sentences':[{'kind':'cta','text':'本次已写咨询。'}],'settings':{}}
+        self.assertEqual(people.closing_hook(plan,cfg)['text'],'本次已写咨询。')
+        with self.assertRaises(ValueError):people.closing_hook({**plan,'settings':{'closing_hook':{'text':'咨询。','hook_id':'d'}}},cfg)
+        plan['settings']={'closing_hook':{'text':'本次指定咨询。'}}
+        self.assertEqual(people.closing_hook(plan,cfg)['source'],'task-text')
+        cfg['closing_hook']['enabled']=False;self.assertEqual(people.closing_hook(plan,cfg)['source'],'disabled')
+        cfg['closing_hook']['enabled']=True;cfg['person']['closingHooks']={};plan={'sentences':[{'kind':'cta','text':''}],'settings':{}}
+        self.assertEqual(people.closing_hook(plan,cfg)['source'],'project-consultation')
+
+    def test_publication_requires_exactly_five_unique_topics_and_safe_names(self):
+        from delivery import validate_publication,safe_name
+        value={'title':'真实探访','description':'了解生活安排。','topics':['养老院','养老生活','养老选择','实地探访','养老咨询']}
+        self.assertEqual(len(validate_publication(value)['topics']),5)
+        value['topics'][-1]='养老院'
+        with self.assertRaises(ValueError):validate_publication(value)
+        self.assertEqual(safe_name('养老生活\n能有多丰富？'),'养老生活能有多丰富')
+
+    def test_missing_cover_identity_stops_before_paid_work(self):
+        from cover import validate_content
+        self.people();job=self.job();cfg=settings(job);cfg['cover']['enabled']=True
+        with self.assertRaisesRegex(ValueError,'社交媒体名'):validate_content({},cfg,{})
+
+    def test_cover_review_accepts_relative_evidence_paths(self):
+        import production
+        from workflow import sha
+        job=self.job();video=job/'render.mp4';video.write_bytes(b'verified fixture');frames=[]
+        for name in ('first.png','second.png'):
+            p=job/name;p.write_bytes(b'frame fixture');frames.append(str(p.resolve()))
+        write(job/'verification.json',{'video':str(video),'sha256':sha(video),'duration':1,'renderedReviewFrames':frames})
+        with patch('production.settings',return_value={'cover':{'enabled':True},'delivery':{'enabled':False}}):
+            production.review(job,[os.path.relpath(p) for p in frames],'已查看实际检查帧')
+        self.assertEqual(read(job/'verification.json')['visualReview']['frames'],frames)
 
 if __name__=='__main__':unittest.main(verbosity=2)

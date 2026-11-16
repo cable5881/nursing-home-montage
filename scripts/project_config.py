@@ -104,11 +104,14 @@ def resolved(job):
         out['voice']['speaker']=p.get('speaker');out['voice']['speech_rate']=p.get('speech_rate',out['voice']['speech_rate'])
         out['voice']['custom_speaker_id']=p.get('custom_speaker_id')
         out['avatar']['portrait']=str(asset_path(p.get('portrait')))
-        out['person']={'id':p['id'],'name':p['name'],'spokenName':p.get('spoken_name',p['name']),'connection':p['connection']}
+        out['person']={'id':p['id'],'name':p['name'],'spokenName':p.get('spoken_name',p['name']),'connection':p['connection'],
+            'socialMediaName':p.get('social_media_name'),'coverPortrait':str(asset_path(p['cover_portrait'])) if p.get('cover_portrait') else None,
+            'closingHooks':copy.deepcopy(p.get('closing_hooks',{}))}
     out=merge(out,plan.get('settings',{}))
     conn=cfg['connections'].get(out.get('person',{}).get('connection'),{})
     out['service']={k:copy.deepcopy(conn[k]) for k in ('provider','storage','tts','avatar') if k in conn}
-    for section,key in (('avatar','portrait'),('music','resource'),('typography','body_font'),('typography','reference_asset')):
+    for section,key in (('avatar','portrait'),('music','resource'),('typography','body_font'),('typography','reference_asset'),('cover','image'),('cover','font')):
+        if section not in out:continue
         if out[section].get(key):out[section][key]=str(asset_path(out[section][key]))
     return out
 def freeze(job):
@@ -117,6 +120,14 @@ def freeze(job):
     cfg=resolved(job);person_asset=cfg['avatar'].get('portrait')
     if person_asset:
         dest=job/'assets/person'/Path(person_asset).name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(person_asset,dest);cfg['avatar']['portrait']=str(dest.resolve())
+    cover_asset=cfg.get('person',{}).get('coverPortrait')
+    if cover_asset:
+        dest=job/'assets/person/cover-portrait.png';dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(cover_asset,dest)
+        cfg['person']['coverPortrait']=str(dest.resolve())
+    if cfg.get('cover',{}).get('image'):
+        source=Path(cfg['cover']['image']);dest=job/'assets/cover-input'/source.name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,dest);cfg['cover']['image']=str(dest.resolve())
+    plan=read(job/'plan.json') if (job/'plan.json').exists() else {}
+    if plan.get('closingHookSelection'):cfg['closingHookSelection']=copy.deepcopy(plan['closingHookSelection'])
     files=[p for p in SKILL.rglob('*') if p.is_file() and not any(x in ('.git','__pycache__') for x in p.relative_to(SKILL).parts)]
     manifest={str(p.relative_to(SKILL)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(files)}
     ident=hashlib.sha256(json.dumps(manifest,sort_keys=True).encode()).hexdigest()[:20]
@@ -151,6 +162,8 @@ def doctor():
         connections[name]={'speech_key':bool(api),'access_keys':bool(ak and sk),'storage':all(s.get(k) for k in ('bucket','region','endpoint'))}
     people=[]
     for p in cfg['people'].values():
-        people.append({'id':p['id'],'name':p['name'],'portrait':bool(p.get('portrait') and asset_path(p['portrait']).is_file()),'voice':bool(p.get('speaker')),'connection':p['connection'],'status':p.get('status')})
-    usable=[p for p in people if p['portrait'] and p['voice'] and p['connection'] in connections and all(connections[p['connection']].values())]
+        people.append({'id':p['id'],'name':p['name'],'portrait':bool(p.get('portrait') and asset_path(p['portrait']).is_file()),'voice':bool(p.get('speaker')),'connection':p['connection'],'status':p.get('status'),
+            'socialMediaName':bool(p.get('social_media_name')),'personalHooks':len(p.get('closing_hooks',{}).get('library',{}))})
+    need_cover=merge(read(SKILL/'preset.json'),cfg.get('settings',{})).get('cover',{}).get('enabled',False)
+    usable=[p for p in people if p['portrait'] and p['voice'] and (not need_cover or p['socialMediaName']) and p['connection'] in connections and all(connections[p['connection']].values())]
     return {'project':str(root()),'tools':tools,'connections':connections,'people':people,'defaultPerson':cfg.get('default_person'),'ready':all(tools.values()) and bool(usable),'remoteAuthVerified':False}

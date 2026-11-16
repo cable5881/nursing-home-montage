@@ -6,6 +6,54 @@ import project_config as pc
 IMAGES={'.png','.jpg','.jpeg','.webp'}
 AUDIO={'.wav','.mp3','.m4a','.aac','.flac','.ogg'}
 def listing():return list(pc.load()['people'].values())
+
+def identity(identifier,patch):
+    """Save a user's selected identity and optional hooks; never infer a social name."""
+    allowed={'social_media_name','spoken_name','cover_portrait','closing_hooks'}
+    if set(patch)-allowed:raise ValueError('未知身份字段')
+    cfg=pc.load();p=pc.person(identifier)
+    for key in ('social_media_name','spoken_name'):
+        if key in patch and (not isinstance(patch[key],str) or not patch[key].strip()):raise ValueError('姓名不能为空：'+key)
+    if patch.get('social_media_name') and any(q['id']!=p['id'] and q.get('social_media_name')==patch['social_media_name'].strip() for q in cfg['people'].values()):raise ValueError('该社媒名已绑定其他数字人，请指定不同名字或明确处理原绑定。')
+    if patch.get('cover_portrait') and not pc.asset_path(patch['cover_portrait']).is_file():raise ValueError('固定封面人像不存在')
+    if 'closing_hooks' in patch:
+        hooks=patch['closing_hooks'];library=hooks.get('library',{})
+        if not isinstance(library,dict):raise ValueError('钩子库应为 ID 到条目的映射')
+        for key,item in library.items():
+            if not key or not isinstance(item,dict) or not isinstance(item.get('text'),str) or not item['text'].strip():raise ValueError('钩子需要 ID 和原文')
+        if hooks.get('default_id') and hooks['default_id'] not in library:raise ValueError('默认钩子不在个人库中')
+    p.update(patch)
+    for key in ('social_media_name','spoken_name'):
+        if key in patch:p[key]=patch[key].strip()
+    cfg['people'][p['id']]=p;pc.write(pc.directory()/'project.json',cfg)
+    return {'saved':True,'id':p['id'],'social_media_name':p.get('social_media_name'),'hooks':len(p.get('closing_hooks',{}).get('library',{}))}
+
+def closing_hook(plan,cfg):
+    """Resolve only this person's saved entries, retaining an explicit authored CTA."""
+    options=cfg.get('closing_hook',{});person=cfg.get('person',{})
+    if not options.get('enabled',True):return {'source':'disabled','person_id':person.get('id'),'text':None}
+    current=plan.get('sentences',[{}])[-1]
+    local=plan.get('settings',{}).get('closing_hook',{})
+    library=person.get('closingHooks',{});items=library.get('library',{})
+    selected=local.get('hook_id')
+    text=local.get('text');source='task-text'
+    if text and selected:raise ValueError('本次钩子 text 与 hook_id 只能指定一个')
+    if not text and selected:
+        if selected not in items:raise ValueError('所选钩子不属于当前数字人：'+selected)
+        text=items[selected]['text'];source='person-selected'
+    # A finalized authored sentence is an explicit task input, never silently overwritten.
+    if not text and current.get('kind')=='cta' and current.get('text'):
+        text=current['text'];source='task-plan'
+    if not text and library.get('default_id'):
+        selected=library['default_id']
+        if selected not in items:raise ValueError('人物默认钩子已失效')
+        text=items[selected]['text'];source='person-default'
+    if not text:
+        keyword=options.get('keyword')
+        if not keyword:raise ValueError('缺少本次咨询钩子；请撰写末句或确认项目咨询关键词。')
+        text='想了解这家养老院的具体情况，评论区留言“'+keyword+'”咨询。';source='project-consultation'
+    if not isinstance(text,str) or not text.strip():raise ValueError('咨询钩子不能为空')
+    return {'source':source,'person_id':person.get('id'),'hook_id':selected,'text':text.strip()}
 def import_people(source,connection='main'):
     source=Path(source).resolve();cfg=pc.load();groups=[];unmatched=[]
     if connection not in cfg['connections']:raise ValueError('先保存服务连接：'+connection)

@@ -1,4 +1,27 @@
-# 服务适配、缓存和恢复
+# 运行、交付与恢复
+
+## 单条制作
+
+脚本路径以 skill 为基准；由智能体执行 `uv run --python 3.11 scripts/montage.py <阶段> <job>`。使用完整脚本路径也可；项目有 rtk 时每条 shell 命令加 rtk。只有修改脚本时才需要读源码。
+
+1. 新任务执行 `inventory <机构素材目录> --out <新 job>`，阅读素材文字并观察视频和图片，按 [计划格式](plan-schema.md) 编写计划。事实句引用原文且核对改写语义；正文首镜头必须是真实运动视频，中段可少量照片。包含封面内容和 publication 发布文案。
+2. `validate-plan` 确定末句咨询钩子，检查事实、人物署名、封面来源和五个话题；再 `setup --install → voice`。完整旁白用本地 medium 独立核验音节和词级时间；发音疑点核验或修正，不能猜测放行。自动 ASR 不等于人工听审，不用后期变速、变调或裁停顿贴旧时长。
+3. `build → avatars`。默认只为开头生成数字人；驱动音频只从本次完整旁白提取。已有 task_id 续查，不重复提交；pending 在当前任务中继续，单次等待最多 45 秒。
+4. 查看 generation-source.json 列出的实际原片帧，检查脸、嘴、眼、手和构图；以 `review-provider --frames <实际看过的路径...> --note <具体观察>` 记录。随后 `cutouts → cover → carve → check → snapshot`。cover 关闭时跳过；封面生成后公共 compose 层自动接入首帧。
+5. 查看布局快照，核对字幕避让与封面首帧／正文次帧；`render → verify` 完整解码和音画时序检查。查看 verification.json 列出的实际成片帧，再 `review --frames ... --note ...`。启用封面时复核证据包含首帧和次帧，不能只交几何检查。
+6. review 保存 final.mp4，并自动运行发布包步骤。补打包可执行 `package <job>`。发布包不完整时不能称为交付完成。
+
+## 用户交付
+
+每条一个 `数字人名_封面主标题.zip`，MP4 使用相同基名；去掉换行及文件系统不支持的字符，页面标题原文不改。ZIP 内只包含四个用户文件：`基名.mp4`、`基名_封面.png`、`基名_发布文案.txt`、`基名_更换封面.html`。
+
+TXT 使用 UTF-8，包含一个发布标题、一段描述和恰好五个不同话题，来自 plan.publication。文案结合本条真实主题与完整机构名，邀请老人或子女咨询，不编造价格、照护条件或承诺；话题不含空格。用户不用填写 JSON，由智能体编写计划。
+
+HTML 自包含字体、人像和图片，离线修改主标题、高亮、三枚标签、完整机构名及三张实地图，导出 PNG。人物及社媒署名不可在编辑器中随意改绑。修改只作用于新 PNG，不自动修改包内视频；若要重新合入首帧，交由本制作流程处理。指定原封面先展示原图，编辑后按当前模板重排。
+
+内部 plan、runtime、cover.json、verification 和 delivery.json 留在作品目录，不塞进用户发布包。保存内容来源、身份、布局与文件哈希，批次 CSV 另见 [批次](batch.md)。
+
+## 服务适配、缓存和恢复
 
 原生服务为火山语音V3、OmniHuman2.0和TOS；服务开通和凭据由用户项目提供，skill不带可调用账号或默认人物。密钥通过project_config从连接引用加载，传给子进程环境，不写入CLI参数、公开配置或run日志。运行记录不保存临时签名URL。
 
@@ -25,3 +48,9 @@ check绑定HTML和实际引用资产的指纹，渲染输入变化重新检查�
 本机已安装相同版本CLI、但npm启动卡住时，可在项目 `settings.render.cli_path` 引用其实际JS入口。编排器检查该入口所在hyperframes包的version与锁定值相同，再用Node直接调用；不把开发者电脑路径写进preset或技能代码。换电脑没有此路径时清除这个用户覆盖值，继续使用锁定版本安装流程。
 
 官方接口：[声音训练](https://docs.volcengine.com/docs/doubao-voice/tone-training-http?lang=zh)、[声音查询](https://docs.volcengine.com/docs/doubao-voice/tone-query-http?lang=zh)、[数字人生成](https://docs.volcengine.com/docs/jimeng-ai/omni-human20-video-generation-interface-documentation?lang=zh)。
+
+## 封面缓存和任务冻结
+
+运行快照冻结所选人物的社媒名、个人钩子、原头像和指定固定封面人像／图片。最终钩子及来源写入 plan，选择随 runtime 冻结；修改人物库不追溯改已开始任务。只改封面／正文排版时复用匹配声音与口型；改钩子必须生成新旁白并重新核验时间，音色模型继续复用。封面由文字、素材、人像、字体和模板脚本指纹匹配，PNG 和编辑 HTML 同时核验。
+
+cover.json 记录输入、来源、布局、人物／字体哈希；delivery.json 记录四个用户文件和 ZIP 哈希。verify 增加第 0／1 帧、编码容差内的封面比较、帧数／时长与音轨起点检查。封面只占一帧，不改变自然音频时间线。

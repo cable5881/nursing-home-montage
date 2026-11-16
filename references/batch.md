@@ -23,3 +23,9 @@ uv run --python 3.11 SCRIPT/batch.py review-provider <批次> --item <任务ID> 
 随后继续run进行抠像、混音与渲染。final_review时读取job/verification.json，查看实际导出帧，再用 `batch.py review ...` 同样参数记录。几何、ASR和少量抽帧不能声称全片人工听审。
 
 成片位于 `<批次>/people/<人物ID>/<序号>/final.mp4`。`batch.py status <批次>` 输出进度并更新交付清单.csv。交付时按人名展示链接/文件，清单含人物、编号、状态和实际成片路径；有失败就明确列出，不能把部分完成说成整批成功。批次数据在技能目录之外，更新后继续使用job绑定的旧版本。
+
+## 默认封面与发布包
+
+每条计划包含 cover 和 publication，整批 start 在付费前核对身份署名、封面素材与五个话题并解析 CTA。cutouts 后统一执行 cover，再检查与渲染。review 后逐条打包发布 ZIP；包失败不能把该条标为 complete。每条独立冻结身份与选择，标题／标签／文案按各条混剪变化。
+
+交付清单增加封面、发布 ZIP 和钩子来源。旧引擎没有 cover 设置时跳过新阶段，继续旧流程；旧任务不会被新版强制补封面。

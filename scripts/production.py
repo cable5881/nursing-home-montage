@@ -93,6 +93,7 @@ def input_fingerprint(job):
     files=list((job/'compositions').glob('*.html'))+[job/'index.html']
     import re,html
     content=''.join(p.read_text(encoding='utf-8') for p in files)
+    files.extend(p for p in (job/'cover.png',job/'cover.json',job/'cover-editor.html') if p.is_file())
     for path in set(re.findall(r'(?:src|href)=[\"\x27](assets/[^\"\x27]+)',content)+re.findall(r'url\([\"\x27]?(assets/[^\"\x27\)]+)',content)):
         p=job/html.unescape(path)
         if p.is_file():files.append(p)
@@ -101,6 +102,8 @@ def require_cutouts(job):
     for a in read(job/'avatars.json'):
         if not (job/a['video']).is_file():raise RuntimeError('Missing requested presenter: '+a['id'])
 def check(job):
+    from cover import require_current
+    require_current(job)
     require_cutouts(job);r=run([*hyperframes_cli(job),'check','--json'],cwd=job,check=False)
     (job/'check.log').write_text(r.stdout+'\n'+r.stderr, encoding='utf-8')
     try:d=json.JSONDecoder().raw_decode(r.stdout[r.stdout.index('{'):])[0]
@@ -111,9 +114,9 @@ def check(job):
 def snapshot(job,times=None):
     total=read(job/'natural-timeline.json')['duration'];avatars=read(job/'avatars.json')
     if not times:
-        points=[.6,total/2,total-1/30]
+        points=[0,1/30,.6,total/2,total-1/30]
         for a in avatars:points.extend([a['start']+min(.6,a['duration']/2),a['start']+a['duration']/2])
-        times=','.join(str(round(t,4)) for t in sorted(set(max(0,min(total-1/30,x)) for x in points)))
+        times=','.join(str(t) for t in sorted(set(max(0,min(total-1/30,x)) for x in points)))
     r=run([*hyperframes_cli(job),'snapshot','--at',times,'--no-end','--output','qc-layout'],cwd=job)
     return {'output':str(job/'qc-layout'),'result':r.stdout[-2200:]}
 def contrast_review(job,frames,note):
@@ -139,6 +142,8 @@ def accepted_check(job,c):
     review=c.get('visualContrastReview',{})
     return review.get('inputFingerprint')==fingerprint and bool(review.get('frames')) and not any(v.get('errorCount',0) for k,v in c.items() if isinstance(v,dict) and k not in ('contrast','visualContrastReview'))
 def render(job):
+    from cover import require_current
+    require_current(job)
     require_cutouts(job);c=read(job/'check.json') if (job/'check.json').exists() else {}
     if not accepted_check(job,c):check(job)
     cfg=settings(job);out=job/'renders/final.mp4';out.parent.mkdir(exist_ok=True)
@@ -166,14 +171,25 @@ def verify(job):
     black=run(['ffmpeg','-hide_banner','-i',video,'-vf',f'crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]},blackdetect=d=0.06:pix_th=0.1:pic_th=0.98','-an','-f','null','-']).stderr
     events=[s for s in black.splitlines() if 'black_start:' in s]
     if events:raise RuntimeError('Black frames in actual footage: '+str(events))
-    qc=job/'qc-final';qc.mkdir(exist_ok=True);times=[.6,total/2,total-1/30]
+    qc=job/'qc-final';qc.mkdir(exist_ok=True);times=[0,1/30,.6,total/2,total-1/30]
     for a in read(job/'avatars.json'):times.extend([a['start']+min(.6,a['duration']/2),a['start']+a['duration']/2,a['start']+a['duration']-1/30])
     frames=[]
     for i,t in enumerate(sorted(set(max(0,min(total-1/30,x)) for x in times))):
         out=qc/f'frame-{i:02}-{t:.3f}s.png';run(['ffmpeg','-y','-v','error','-ss',t,'-i',video,'-frames:v','1',out]);frames.append(str(out))
     report={'video':str(video),'sha256':sha(video),'duration':float(m['format']['duration']),'frames':round(total*30),'width':1080,'height':1920,'fps':30,'audio':lev,'tailAfterAudio':tail,'fullDecode':True,'centralFootageBlackEvents':events,'renderedReviewFrames':frames,'visualReviewPending':True,'humanListeningPerformed':False}
-    report['footageBlackCheckCrop']=crop;report['template']=layout.get('template','legacy-orange')
+    report['footageBlackCheckCrop']=crop;report['template']=settings(job).get('template',{}).get('id','legacy-orange')
     report['avatarWindows']=[{'id':a['id'],'start':a['start'],'end':a['start']+a['duration']} for a in read(job/'avatars.json')]
+    if settings(job).get('cover',{}).get('enabled'):
+        from cover import require_current
+        require_current(job)
+        def pixels(source):return run(['ffmpeg','-v','error','-i',source,'-frames:v','1','-vf','scale=108:192','-pix_fmt','rgb24','-f','rawvideo','-'],binary=True).stdout
+        expected=pixels(job/'cover.png');actual=pixels(frames[0]);second=pixels(frames[1])
+        error=sum(abs(a-b) for a,b in zip(expected,actual))/len(expected)
+        difference=sum(abs(a-b) for a,b in zip(actual,second))/len(actual)
+        if error>6 or difference<2:raise RuntimeError('首帧封面未匹配或泄漏到次帧')
+        audio_stream=next(s for s in m['streams'] if s['codec_type']=='audio')
+        if abs(float(audio_stream.get('start_time',0)))>1/30:raise RuntimeError('音轨起点发生偏移')
+        report['cover']={'frames':1,'firstFrameMeanPixelError':error,'secondFrameDifference':difference,'pngSha256':sha(job/'cover.png'),'extraSeconds':0}
     checks=read(job/'check.json');report['fullCompositionCheckPassed']=checks.get('ok',False)
     if checks.get('visualContrastReview'):report['visualContrastReview']=checks['visualContrastReview']
     write(job/'verification.json',report);state(job,phase='verified_visual_review_pending',next='View renderedReviewFrames, then review')
@@ -183,8 +199,14 @@ def review(job,frames,note):
     if sha(video)!=report['sha256']:raise RuntimeError('Render changed; verify and inspect it again')
     if not note.strip() or not frames:raise ValueError('Record actual inspected frames and concrete findings')
     known=set(report['renderedReviewFrames'])
+    frames=[str(Path(p).resolve()) for p in frames]
     if any(str(Path(p).resolve()) not in known for p in frames):raise ValueError('Review evidence must be from this verified render')
+    if settings(job).get('cover',{}).get('enabled') and not set(report['renderedReviewFrames'][:2]).issubset(set(map(str,frames))):raise ValueError('请查看并记录封面首帧与正文次帧')
     report.update(visualReviewPending=False,visualReview={'frames':frames,'note':note,'videoSha256':report['sha256']});write(job/'verification.json',report)
     final=job/'final.mp4';copy_asset(video,final)
-    state(job,phase='complete',video=str(final),sha256=report['sha256'],next='Deliver final.mp4 to the user')
-    return {'video':str(final),'duration':report['duration'],'sha256':report['sha256']}
+    result={'video':str(final),'duration':report['duration'],'sha256':report['sha256']}
+    if settings(job).get('delivery',{}).get('enabled'):
+        from delivery import package
+        result['delivery']=package(job)
+    state(job,phase='complete',video=str(final),sha256=report['sha256'],next='Deliver the publish-ready ZIP' if result.get('delivery') else 'Deliver final.mp4 to the user')
+    return result

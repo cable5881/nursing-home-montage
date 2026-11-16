@@ -122,3 +122,5 @@ def compose(job):
     else:
         write(job/'template.json',{'id':ident,**theme.get('overrides',{})})
         run([sys.executable,SKILL/'scripts/compose_reference.py',job,'--template',ident])
+    from cover import attach
+    attach(job)

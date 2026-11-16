@@ -132,6 +132,22 @@ def validate_plan(job):
     closing=settings(job).get('closing_hook',{})
     if closing.get('enabled') and plan['sentences'][-1].get('kind')!='cta':
         raise ValueError('结尾需要独立 kind=cta 的引导句及真实视频镜头；本次明确不需要时设置 closing_hook.enabled=false')
+    if closing.get('enabled'):
+        import people
+        selection=people.closing_hook(plan,settings(job));last=plan['sentences'][-1]
+        previous=plan.get('closingHookSelection',{})
+        if previous.get('text')==selection['text'] and previous.get('person_id')==selection['person_id'] and not plan.get('settings',{}).get('closing_hook',{}).get('hook_id'):
+            selection=previous
+        if last.get('text')!=selection['text']:
+            last['text']=selection['text'];last.pop('captions',None)
+        plan['closingHookSelection']=selection
+    cfg=settings(job)
+    if cfg.get('cover',{}).get('enabled'):
+        from cover import validate_content
+        validate_content(plan,cfg,inv)
+    if cfg.get('delivery',{}).get('enabled'):
+        from delivery import validate_publication
+        validate_publication(plan.get('publication',{}))
     for i,s in enumerate(plan['sentences']):
         if not clean(s['text']):raise ValueError('Empty sentence')
         kind=s.get('kind','fact')
@@ -151,6 +167,7 @@ def validate_plan(job):
             if clean(''.join(c['lines']))!=clean(c['text']) or not 1<=len(c['lines'])<=2:raise ValueError('Caption lines must preserve wording and use 1–2 lines')
     # Quotations prove provenance, not the truth of an arbitrary paraphrase; SKILL.md requires semantic source review.
     (job/'narration.txt').write_text('\n'.join(s['text'] for s in plan['sentences'])+'\n', encoding='utf-8')
+    write(job/'plan.json',plan)
     return plan,files
 
 def engine_env(job):return pc.engine_env(job)

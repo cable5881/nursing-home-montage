@@ -65,6 +65,7 @@ def main():
     q=sub.add_parser('bind');q.add_argument('person');q.add_argument('--speaker',required=True);q.add_argument('--custom')
     q=sub.add_parser('default');q.add_argument('person')
     q=sub.add_parser('train');q.add_argument('person');q.add_argument('--speaker');q.add_argument('--custom')
+    q=sub.add_parser('identity');q.add_argument('person');q.add_argument('--file',type=Path,required=True)
     args=p.parse_args()
     if args.project:os.environ['MONTAGE_PROJECT_ROOT']=str(args.project.resolve())
     if args.action=='init':return pc.init()
@@ -74,6 +75,7 @@ def main():
     if args.action=='credentials':return pc.store_connection(args.connection,pc.read(args.file))
     if args.action=='import-people':return people.import_people(args.folder,args.connection)
     if args.action=='bind':return people.bind(args.person,args.speaker,args.custom)
+    if args.action=='identity':return people.identity(args.person,pc.read(args.file))
     if args.action=='default':return pc.save_patch({'default_person':pc.person(args.person)['id']})
     if args.action=='train':
         from voice_clone import prepare

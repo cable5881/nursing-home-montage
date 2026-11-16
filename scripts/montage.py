@@ -13,7 +13,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='action',required=True)
     q=sub.add_parser('inventory');q.add_argument('input',type=Path);q.add_argument('--out',type=Path,required=True)
     q=sub.add_parser('variant');q.add_argument('job',type=Path);q.add_argument('--out',type=Path,required=True);q.add_argument('--template',choices=('orange','green','legacy-orange','fullscreen-orange'),required=True);q.add_argument('--platform')
-    for name in ('validate-plan','setup','voice','build','avatars','review-provider','cutouts','compose','carve','check','snapshot','preview','render','verify','review','review-contrast','status'):
+    for name in ('validate-plan','setup','voice','build','avatars','review-provider','cutouts','cover','package','compose','carve','check','snapshot','preview','render','verify','review','review-contrast','status'):
         q=sub.add_parser(name);q.add_argument('job',type=Path)
         if name=='setup':q.add_argument('--install',action='store_true')
         if name=='voice':q.add_argument('--reuse-audio',type=Path)
@@ -43,6 +43,12 @@ def main():
     if action=='review-provider':return production.review_provider(job,args.frames,args.note)
     if action=='review-contrast':return production.contrast_review(job,args.frames,args.note)
     if action=='cutouts':return production.cutouts(job)
+    if action=='cover':
+        from cover import generate
+        result=generate(job);compose(job);return result
+    if action=='package':
+        from delivery import package
+        return package(job)
     if action=='compose':compose(job);return {'composition':str(job/'index.html')}
     if action=='carve':return production.carve(job)
     if action=='check':return production.check(job)

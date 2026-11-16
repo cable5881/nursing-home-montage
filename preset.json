@@ -1,8 +1,17 @@
 {
   "version": 1,
-  "template": {"id": "legacy-orange", "overrides": {}},
-  "closing_hook": {"enabled": true},
-  "platform_ui": {"mode": "common", "profiles": {}},
+  "template": {
+    "id": "legacy-orange",
+    "overrides": {}
+  },
+  "closing_hook": {
+    "enabled": true,
+    "goal": "consultation"
+  },
+  "platform_ui": {
+    "mode": "common",
+    "profiles": {}
+  },
   "video": {
     "width": 1080,
     "height": 1920,
@@ -50,5 +59,13 @@
     "collection_index": null,
     "reference_asset": null,
     "reference_identity": null
+  },
+  "cover": {
+    "enabled": true,
+    "template": "teal-adaptive",
+    "header_text": null
+  },
+  "delivery": {
+    "enabled": true
   }
 }

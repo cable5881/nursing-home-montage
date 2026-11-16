@@ -68,3 +68,34 @@
 可选设置依次继承 preset.json和用户项目settings；选择人物优先使用plan.person；更换人物用 settings.avatar.portrait（本地路径），表情用 settings.avatar.prompt，换音乐用 settings.music.resource（绝对本地路径，或.montage相对路径，并设置enabled=true）。语音发音规则使用 settings.voice.pronunciation_dict.tone。模板当前固定1080×1920/30fps；其他画幅须明确改编模板。
 
 全屏橙色设置template.id=fullscreen-orange；完整UI测量配置见[平台UI避让](platform-ui.md)。build保存caption-characters.json供后续不改配音的重断句；compose测量含描边/阴影和放大重点词的实际宽度，保留已有语义分行及数字单位，不拆开“24小时”等组合。需要超过两行时按照已有核验时间拆cue，不猜测词序或语速。自动分行仍应结合实际快照审阅语义。用户给定的字体、具体平台截图、个人人物及钩子原文都保存在项目侧，不写死进通用模板。
+
+## 封面与发布字段
+
+智能体在计划顶层填写：
+
+```json
+{
+  "cover": {
+    "main_title": {"text":"养老生活能有多丰富？","lines":["养老生活","能有多丰富？"],"highlights":["丰富"]},
+    "labels": [
+      {"text":"居住环境","source":"居室.mp4","time":2},
+      {"text":"活动空间","source":"公共区域.jpg"},
+      {"text":"院区环境","source":"门头.jpg","match":"同机构实图"}
+    ]
+  },
+  "publication": {
+    "title":"结合本条内容的发布标题",
+    "description":"结合已核验事实及咨询动作的一段发布描述。",
+    "topics":["养老院","养老生活","养老选择","养老院探访","养老咨询"]
+  },
+  "settings": {"cover":{"enabled":true},"closing_hook":{"enabled":true}}
+}
+```
+
+封面 main_title 可直接给字符串，或提供 text、可选 lines 与 highlights；lines 必须保留 text 原字。labels 恰好三个，text/source 必填；time 为视频提帧秒数，图片不填。可选 crop 为 [左,上,右,下] 归一化裁切，focus 为 [水平,垂直] 归一化焦点。详细语义见 [封面](covers.md)。首帧静态例外只适用于独立封面层，正文首句仍全为真实视频。
+
+settings.cover.image 可指定现成封面（本机绝对路径或 .montage 相对路径）；enabled=false 关闭首帧封面。头标继承项目设置。完整院名必须来自 institution.name；人物与社媒署名从绑定人物读取，不能在封面内容中另传其他署名。
+
+本次钩子覆盖可用 settings.closing_hook.text 或 hook_id（二者择一），或直接写末句 CTA；留空 CTA text 时可选人物默认或项目咨询兜底，分镜仍必填。选择与来源保存 closingHookSelection，并随 runtime 冻结，不另增钩子清单文件。
+
+publication 由智能体根据本条内容撰写，不要求用户填写。topics 恰好五个不同话题，包含或不含开头 # 均可，不能有空格。发布包需要封面和编辑 HTML；用户明确只要视频时可本次 settings.delivery.enabled=false，避免强制打包。

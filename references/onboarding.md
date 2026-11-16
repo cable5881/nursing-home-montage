@@ -34,3 +34,13 @@
 connections.main包含speech_key/access_key/secret_key引用、storage、clone_mode、speaker_pool。people.<id>包含name、portrait、sample、speaker、custom_speaker_id、connection、speech_rate、status。所有相对资产路径均相对于.montage；用户在对话提供的外部路径应转换为绝对路径或复制到.montage/assets，避免依赖技能目录。
 
 字体默认包内Noto，适配各系统。项目可用settings.typography.body_font和collection_index指定自己的字体；settings.music.enabled/resource指定自己的配乐。当前没有内置通用配乐，缺音乐时可询问用户提供或接受无BGM；不借用其他用户的商业授权曲目。
+
+## 身份与可选咨询钩子
+
+每个人物绑定一个 social_media_name；用户给一个名字即可，不要求平台、ID 或主页。缺失时补问，不能从旧文案猜测。人像＋社媒名是身份输入，语音提供录音或已有音色 ID；spoken_name 沿用已明确的口播称呼。封面优先使用 cover_portrait 私有透明 PNG，否则从人物原图本地抠像并缓存。系统生成 ID、规范图片、训练／任务记录和哈希，用户不用填写。
+
+新增人物时，可自填钩子、从 [咨询钩子](closing-hooks.md) 推荐的 3–5 条中选定或编辑，也可跳过。只存已选条目，不存全部推荐草稿。导入允许未完成身份；生产前按本次功能补齐署名／音色，个人钩子库为空不阻塞。服务凭据仍按项目连接共享。
+
+智能体将用户已指定内容保存为补丁，运行 `project.py identity <人物名或 ID> --file <补丁>`；可用字段 social_media_name、spoken_name、cover_portrait、closing_hooks。closing_hooks 为 `{"default_id":null,"library":{"consult":{"text":"用户已选择的咨询原文","keyword":"已确认关键词"}}}`，default_id 仅在用户指定默认条目时保存。
+
+当前项目的固定头标保存 settings.cover.header_text，首次确认后每条继承。人物姓名、社媒名、人像、音色和个人钩子都留在 .montage，不写入通用 preset。没有背景音乐时明确输出无 BGM，不借用开发者私有曲目。

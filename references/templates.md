@@ -55,3 +55,7 @@ uv run --python 3.11 scripts/compose_reference.py <job> --template green
 暖金背景使用 HyperFrames 原生 `data-color-grading.effects.blur`（0–1）；不以CSS blur处理素材。检查、快照、成片核验仍按主流程执行。对一比一复刻需选同一房间画面和参考句，检查文字可见边界、分隔线、背景裁切和高亮；不同镜头的背景像素不能作为排版误差。
 
 参考图金色描边文字在亮背景上可能触发只采样填充色的WCAG错误。先保留完整check报告并修复全部非contrast错误；实际查看本工程qc-layout对应帧，确认描边、阴影和文字可读后，才可用 `montage.py review-contrast <job> --frames ... --note ...` 记录限定的视觉复核。原始错误和fullCheckPassed=false仍保留；复核绑定全部输入指纹，修改画面后自动失效，不能将其描述为完整自动检查通过。
+
+## 独立封面
+
+正文模板与 cover 分开配置，公共正文默认仍 legacy-orange，项目已有模板覆盖不重置。新片默认独立青绿封面见 [封面规则](covers.md)；封面自适应字号不改变本文件的正文字幕固定字号要求。封面仅占首帧，正文仍按既有时间线运动播放。
