@@ -12,4 +12,6 @@
 
 入口：[SKILL.md](SKILL.md)。具体初始化、计划、制作、封面、钩子和批次说明均从入口按需读取。用户数据保存在项目 .montage、素材和作品目录，替换 skill 不重置配置，旧任务沿用绑定引擎。
 
+需要新版时直接对智能体说“更新养老混剪到最新版”；只想查询时说“检查养老混剪更新”。按[版本更新](references/update.md)从[官方 GitHub 最新正式 Release](https://github.com/laoliAI666/nursing-home-montage/releases/latest)获取运行包并校验，保留项目资料和旧任务。首次使用该入口须先安装包含这条规则的版本。
+
 此运行包不包含机构实拍素材、个人人物、账号、凭据、开发测试或发布工具。运行版本见 VERSION/release.json；第三方许可见 THIRD_PARTY_NOTICES.md 和 LICENSE。
