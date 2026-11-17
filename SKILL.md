@@ -18,7 +18,7 @@ description: 用养老机构实拍素材和事实文本制作含数字人、封�
 | 当前操作 | 按需读取 |
 |---|---|
 | 首次配置、补缺项、新增或修改人物 | [初始化与人物](references/onboarding.md) |
-| 生成、改写或复核口播（包括批次中的每一条） | 必读[口播文案](references/narration.md)，再按计划格式落稿 |
+| 生成、改写或复核口播（包括批次中的每一条） | 必读[口播文案](references/narration.md)，初稿后按其中入口做 Humanizer-zh 润色，再复核并按计划格式落稿 |
 | 编写或修改素材、文案、分镜计划 | [计划格式](references/plan-schema.md) |
 | 执行制作、检查和导出 | [运行](references/runtime.md) |
 | 修改文案、排版或升级已有工程 | [另存与恢复](references/revisions.md) |

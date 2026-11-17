@@ -1,5 +1,6 @@
 # Third-party resources
 
+- references/narration-polish.md: an adaptation of Humanizer-zh's editing guidance for nursing-home narration. Source: https://github.com/op7418/Humanizer-zh/tree/f4518a8eab97b8bfebc66a89d34320a89bef6930 . Copyright (c) 2026 歸藏. MIT; full original license in references/licenses/Humanizer-zh-MIT.txt. Adapted for this skill's factual, audience and timing requirements.
 - assets/NotoSansSC-Black.otf: Noto Sans SC, Google/Adobe Noto CJK project. SIL Open Font License 1.1; full license in assets/OFL-Noto.txt. Source: https://github.com/notofonts/noto-cjk . Font license remains separate from project code.
 - assets/LXGWWenKai-Regular.ttf: LXGW WenKai, derived from Fontworks Klee One, supplied under SIL Open Font License 1.1. Full license in assets/OFL-LXGWWenKai.txt. Source: https://github.com/lxgw/LxgwWenKai . Font license remains separate from project code.
 - assets/gsap.min.js: GSAP 3.12.5, GreenSock. Original copyright/license header retained. Terms: https://gsap.com/standard-license/ . This file is not relicensed under this project's code license.
