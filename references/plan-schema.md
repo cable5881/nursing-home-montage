@@ -2,6 +2,8 @@
 
 用户只提供机构素材。由智能体阅读 inventory.json/source-text.txt、观察视频图片后编写 job/plan.json，不把填 JSON 的工作交给用户。
 
+编写或修改 `sentences` 前按[口播文案](narration.md)完成整篇口语稿，再拆分计划字段和字幕。
+
 ```json
 {
   "version": 1,
@@ -16,14 +18,13 @@
   ],
   "sentences": [
     {
-      "text":"给长辈选养老院，先看生活空间，再看照护安排。",
+      "text":"爸妈住进养老院，平时在哪儿休息、活动？",
       "kind":"hook",
       "factIds":[],
       "label":"居住空间",
       "captions":[
-        {"text":"给长辈选养老院","lines":["给长辈","选养老院"],"focus":""},
-        {"text":"先看生活空间","lines":["先看生活空间"],"focus":"生活空间"},
-        {"text":"再看照护安排","lines":["再看照护安排"],"focus":"照护安排"}
+        {"text":"爸妈住进养老院","lines":["爸妈住进养老院"],"focus":""},
+        {"text":"平时在哪儿休息、活动","lines":["平时在哪儿","休息、活动"],"focus":"休息、活动"}
       ],
       "shots":[
         {"path":"公共空间.mp4","sourceStart":1.9,"weight":1.5,"positionY":62,"description":"实拍移动镜头中的公共休息区"},

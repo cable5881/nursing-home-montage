@@ -4,8 +4,8 @@
 
 ## 单条制作
 
-1. `inventory <机构素材目录> --out <新job>`。阅读 source-text.txt，观察实际素材，按[计划格式](plan-schema.md)编写 plan。先确定封面承诺、主体段落、结尾咨询动作；正文开头和结尾用真实运动视频。
-2. `validate-plan` 生成 content-audit.json。逐项查看事实原文、封面标签、发布文案和文画对应；按[内容复核](content-review.md)处理警示，再 `review-content --note <具体结论>`。引用存在不代表改写语义成立。
+1. `inventory <机构素材目录> --out <新job>`。阅读 source-text.txt，观察实际素材，按[口播文案](narration.md)写稿、按[计划格式](plan-schema.md)编写 plan；正文开头和结尾用真实运动视频。
+2. `validate-plan` 生成 content-audit.json。按[内容复核](content-review.md)核对来源、口播、封面、发布文案和文画对应，处理警示后执行 `review-content --note <具体结论>`。
 3. `setup --install → preflight`，在付费前验证锁定浏览器、页面加载与截图。失败只读[故障定位](troubleshooting.md)，不修改共享依赖缓存。然后 `voice → build`；ASR差异和数字映射失败分别定位，复用原音，不删数字绕过。
 4. `avatars` 默认只生成开头。有 task_id 只续查，单次等待最多45秒。查看 generation-source.json 指定的原片首中尾帧，核对脸、嘴、眼、手和构图，再 `review-provider --frames <全部原片帧> --note <实际观察>`。
 5. `cutouts → cover → carve → check → snapshot`。核对抠像边缘、逐镜内容、所有字幕、首帧封面和次帧正文；shot-audit.json提示重复片源与源时间重叠。封面图和标签单独逐槽核对，见[封面](covers.md)。
