@@ -23,7 +23,7 @@ description: 用养老机构实拍素材和事实文本制作含数字人、封�
 | 执行制作、检查和导出 | [运行](references/runtime.md) |
 | 修改文案、排版或升级已有工程 | [另存与恢复](references/revisions.md) |
 | 环境、语音或供应商阶段失败 | [故障定位](references/troubleshooting.md) |
-| 生成或修改封面 | [封面](references/covers.md) |
+| 生成或修改封面、发布标题和描述 | [封面与发布文案](references/covers.md) |
 | 推荐、选择或改写片尾引导 | [咨询钩子](references/closing-hooks.md) |
 | 多人物、多条成片 | [批次](references/batch.md) |
 | 改正文模板或排版 | [模板](references/templates.md) |
