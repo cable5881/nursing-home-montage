@@ -162,6 +162,70 @@ function serviceTestControl(kind,label,detail='') {
   return `<div class="form-group"><button type="button" class="secondary" data-test-service="${kind}">${label}</button>
     ${detail?`<p class="form-help">${detail}</p>`:''}<p class="form-help" role="status" id="test-${kind}-result"></p></div>`;
 }
+function productionServiceSettings(config) {
+  const conn = config.connection;
+  const tos = conn.storage.provider === 'tos';
+  const people = config.people.filter(person=>person.ready);
+  return `<section class="panel" aria-labelledby="production-services-title">
+    <div class="settings-section-heading"><span>${icon('clapper')}</span><h2 id="production-services-title">制作服务</h2></div>
+    <section class="settings-service" aria-labelledby="speech-settings-title">
+      <div class="settings-service-heading">
+        <h3 id="speech-settings-title">语音与音色复刻</h3>
+        <div class="settings-links"><a href="https://console.volcengine.com/speech/app" target="_blank" rel="noreferrer">获取语音 API Key ${icon('arrow-up-right')}</a></div>
+      </div>
+      ${credentialField('api_key','语音 API Key',conn.speech,'填写语音服务的 API Key')}
+      <div class="form-group"><label class="field-label" for="test-person">测试音色</label><select id="test-person">
+        ${people.map(p=>`<option value="${E(p.id)}" ${p.isDefault?'selected':''}>${E(p.name)}</option>`).join('')}
+      </select></div>
+      ${serviceTestControl('speech','测试语音连接','用所选音色合成四字短句，按语音平台规则计费。')}
+      <details class="form-group" ${conn.cloneMode?'open':''}>
+        <summary class="field-label">音色复刻设置</summary>
+        <p class="form-help">仅提供录音时，需在制作前单独发起复刻。成功后音色自动绑定到人物。</p>
+        <div class="form-group"><label class="field-label" for="clone-mode">复刻方式</label>
+          <select name="clone_mode" id="clone-mode">
+            <option value="">保留当前设置</option>
+            <option value="prepaid" ${conn.cloneMode === 'prepaid'?'selected':''}>使用已有预付费音色槽位</option>
+            <option value="postpaid" ${conn.cloneMode === 'postpaid'?'selected':''}>创建后付费音色 · 首次正式合成产生槽位费</option>
+          </select>
+        </div>
+        <div class="form-group" id="speaker-pool-fields" ${conn.cloneMode === 'prepaid'?'':'hidden'}>
+          <label class="field-label" for="speaker-pool">空闲音色槽位</label>
+          <input class="input" name="speaker_pool" id="speaker-pool" value="${E(conn.speakerPool.join(', '))}" placeholder="多个音色 ID 用逗号分隔">
+        </div>
+      </details>
+    </section>
+    <section class="settings-service" aria-labelledby="avatar-settings-title">
+      <div class="settings-service-heading">
+        <h3 id="avatar-settings-title">数字人 · OmniHuman 2.0</h3>
+        <div class="settings-links"><a href="https://console.volcengine.com/iam/keymanage/" target="_blank" rel="noreferrer">获取视频 AK / SK ${icon('arrow-up-right')}</a></div>
+      </div>
+      <div class="form-row">${credentialField('ak','Access Key ID',conn.ak,'填写 Access Key ID')}${credentialField('sk','Secret Access Key',conn.sk,'填写 Secret Access Key')}</div>
+      ${serviceTestControl('avatar','测试数字人连接','只验证任务查询权限。')}
+    </section>
+    <section class="settings-service" aria-labelledby="storage-settings-title">
+      <div class="settings-service-heading"><h3 id="storage-settings-title">文件中转</h3></div>
+      <div class="form-group"><label class="field-label" for="storage-provider">音频中转方式</label>
+        <select id="storage-provider" name="storage_provider">
+          <option value="tmpfile" ${tos?'':'selected'}>tmpfile · 无需账号和 Key</option>
+          <option value="tos" ${tos?'selected':''}>TOS · 使用自己的存储桶</option>
+        </select>
+        <p class="form-help" id="tmpfile-note" ${tos?'hidden':''}>tmpfile 用于向数字人服务传递音频。持有链接者可下载，文件 7 天后自动删除。</p>
+      </div>
+      <div id="tos-fields" ${tos?'':'hidden'}>
+        <div class="form-group"><label class="field-label" for="bucket">存储桶名称</label>
+          <input class="input" name="bucket" id="bucket" value="${E(conn.storage.bucket || '')}">
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="field-label" for="region">区域</label>
+            <input class="input" name="region" id="region" placeholder="cn-beijing" value="${E(conn.storage.region || '')}"></div>
+          <div class="form-group"><label class="field-label" for="endpoint">Endpoint</label>
+            <input class="input" name="endpoint" id="endpoint" placeholder="tos-cn-beijing.volces.com" value="${E(conn.storage.endpoint || '')}"></div>
+        </div>
+        ${serviceTestControl('storage','测试 TOS 存储桶','使用上面的 AK / SK 检查存储桶访问权限。')}
+      </div>
+    </section>
+  </section>`;
+}
 function modelFields(form) {
   return {provider:form.elements.model_provider.value,model:form.elements.model_id.value,
           baseUrl:form.elements.model_base_url.value,outputMode:form.elements.model_output_mode.value,
@@ -171,14 +235,6 @@ function bindServiceSettings(form) {
   const model = state.config.model;
   if (!model) return;
   form.insertAdjacentHTML('afterbegin',modelSettings());
-  const people = state.config.people.filter(p=>p.ready);
-  $('#key-api_key').closest('.form-group').insertAdjacentHTML('afterend',
-    `<div class="form-group"><label class="field-label" for="test-person">测试音色</label><select id="test-person">
-    ${people.map(p=>`<option value="${E(p.id)}" ${p.isDefault?'selected':''}>${E(p.name)}</option>`).join('')}</select></div>
-    ${serviceTestControl('speech','测试语音连接','用所选音色合成四字短句，按语音平台规则计费。')}`);
-  $('#key-sk').closest('.form-row').insertAdjacentHTML('afterend',
-    serviceTestControl('avatar','测试数字人连接','只验证任务查询权限。'));
-  $('#tos-fields').insertAdjacentHTML('beforeend',serviceTestControl('storage','测试 TOS 存储桶','检查存储桶访问权限。'));
   const testResult=$('#test-model-result');
   const modelKey=form.elements.model_key;
   const keyButton=modelKey.parentElement.querySelector('.reveal');
@@ -230,9 +286,12 @@ function bindServiceSettings(form) {
   }));
 }
 function renderSettings() {
-  const c = state.config, conn = c.connection;
-  main.innerHTML = `${heading('先准备好，以后就简单了。','服务与数字人只需配置一次。设置保存在你的本地项目。')}<div class="settings-layout"><form class="settings-stack" id="settings-form"><section class="panel"><div class="settings-section-heading"><span>1</span><div><h2>连接语音与数字人服务</h2><p>使用火山引擎语音与 OmniHuman 2.0，所有数字人共用这套连接。</p></div></div><div class="settings-links"><a href="https://console.volcengine.com/speech/app" target="_blank" rel="noreferrer">获取语音 API Key ${icon('arrow-up-right')}</a><a href="https://console.volcengine.com/iam/keymanage/" target="_blank" rel="noreferrer">获取视频 AK / SK ${icon('arrow-up-right')}</a></div>${credentialField('api_key','语音 API Key',conn.speech,'填写语音服务的 API Key')}<div class="form-row">${credentialField('ak','Access Key ID',conn.ak,'填写 Access Key ID')}${credentialField('sk','Secret Access Key',conn.sk,'填写 Secret Access Key')}</div><p class="form-help">语音 Key 与视频 AK / SK 来自不同服务。已保存标记表示本地配置完整，实际服务权限会在制作预检时检查。</p></section><section class="panel"><div class="settings-section-heading"><span>2</span><div><h2>文件中转与声音复刻</h2><p>推荐保留默认中转方式，不用额外申请存储服务。</p></div></div><div class="form-group"><label class="field-label" for="storage-provider" style="margin-bottom:10px">音频文件中转</label><select id="storage-provider" name="storage_provider"><option value="tmpfile" ${conn.storage.provider === 'tmpfile' ? 'selected' : ''}>tmpfile · 无需账号和 Key</option><option value="tos" ${conn.storage.provider === 'tos' ? 'selected' : ''}>TOS · 使用自己的存储桶</option></select></div><div id="tos-fields" ${conn.storage.provider !== 'tos' ? 'hidden' : ''}><div class="form-group"><label class="field-label" for="bucket">存储桶名称</label><input class="input" name="bucket" id="bucket" value="${E(conn.storage.bucket || '')}"></div><div class="form-row"><div class="form-group"><label class="field-label" for="region">区域</label><input class="input" name="region" id="region" placeholder="cn-beijing" value="${E(conn.storage.region || '')}"></div><div class="form-group"><label class="field-label" for="endpoint">Endpoint</label><input class="input" name="endpoint" id="endpoint" placeholder="tos-cn-beijing.volces.com" value="${E(conn.storage.endpoint || '')}"></div></div></div><p class="form-help" id="tmpfile-note" ${conn.storage.provider === 'tos' ? 'hidden' : ''}>tmpfile 用于向数字人服务传递音频。持有链接者可下载，文件 7 天后自动删除。</p><div class="form-group" style="margin-top:24px"><label class="field-label" for="clone-mode" style="margin-bottom:10px">新增声音时的复刻方式</label><select name="clone_mode" id="clone-mode"><option value="">以后再选 · 已绑定音色不受影响</option><option value="prepaid" ${conn.cloneMode === 'prepaid' ? 'selected' : ''}>使用已有预付费音色槽位</option><option value="postpaid" ${conn.cloneMode === 'postpaid' ? 'selected' : ''}>创建后付费音色 · 首次正式合成产生槽位费</option></select></div><div class="form-group"><label class="field-label" for="speaker-pool" style="margin-bottom:10px">空闲音色槽位<span class="optional">预付费模式填写</span></label><input class="input" name="speaker_pool" id="speaker-pool" value="${E(conn.speakerPool.join(', '))}" placeholder="多个音色 ID 用逗号分隔"></div></section><section class="panel"><div class="settings-section-heading"><span>3</span><div><h2>让 Agent 接手制作</h2><p>使用电脑上已安装的 Agent 与 skill，不需要再配一套大模型 Key。</p></div></div><div id="agent-config-status">${agentStatusBlock()}</div><p class="inline-note">首次连接时，把下方的连接指令发送给 Agent。保持这个 Agent 对话运行，之后页面负责提交任务和显示进度。</p></section><section class="panel"><div class="settings-section-heading"><span>${icon('settings')}</span><div><h2>你的制作偏好</h2><p>这些设置将用于之后创建的新任务。</p></div></div><div class="form-group"><label class="field-label" for="cover-header" style="margin-bottom:10px">封面固定头标</label><input class="input" name="coverHeader" id="cover-header" value="${E(c.preferences.coverHeader)}" placeholder="例如：重庆养老院探访"></div><div class="switch-row"><label for="default-music">${icon('music')} 默认添加背景音乐</label><input type="checkbox" class="switch" id="default-music" name="music" ${c.preferences.music ? 'checked' : ''}></div></section><div class="sticky-actions"><button class="primary" type="submit">${icon('save')} 保存本地设置</button><button class="secondary" type="submit" data-next="people">下一步：配置数字人 ${icon('arrow-right')}</button><span id="settings-error" class="inline-error error-slot" role="alert"></span></div></form><aside class="settings-guide"><h3>第一次使用，跟着做就好。</h3><ol><li><strong>开通服务，填好 Key</strong>到火山引擎控制台获取语音 Key 和视频 AK / SK，填入左侧表单。</li><li><strong>添加你自己的数字人</strong>准备一张正面照片，绑定已有音色；也可以提供录音，让 Agent 完成声音复刻。</li><li><strong>选择机构素材，开始制作</strong>放入实拍视频和真实介绍，写下这条视频的想法。</li></ol><p>留空的 Key 会保留原配置。保存后输入框自动清空，页面只显示是否已配置。</p><div class="path-note">当前项目<br>${E(c.project)}<p style="margin-top:10px">配置位于项目的 .montage 目录，更新 skill 后仍会保留。</p></div></aside></div>`;
+  const c = state.config;
+  main.innerHTML = `${heading('先准备好，以后就简单了。','服务与数字人只需配置一次。设置保存在你的本地项目。')}<div class="settings-layout"><form class="settings-stack" id="settings-form">
+    ${productionServiceSettings(c)}
+    <section class="panel"><div class="settings-section-heading"><span>${icon('clapper')}</span><div><h2>让 Agent 接手制作</h2><p>使用电脑上已安装的 Agent 与 skill，不需要再配一套大模型 Key。</p></div></div><div id="agent-config-status">${agentStatusBlock()}</div><p class="inline-note">首次连接时，把下方的连接指令发送给 Agent。保持这个 Agent 对话运行，之后页面负责提交任务和显示进度。</p></section><section class="panel"><div class="settings-section-heading"><span>${icon('settings')}</span><div><h2>你的制作偏好</h2><p>这些设置将用于之后创建的新任务。</p></div></div><div class="form-group"><label class="field-label" for="cover-header" style="margin-bottom:10px">封面固定头标</label><input class="input" name="coverHeader" id="cover-header" value="${E(c.preferences.coverHeader)}" placeholder="例如：重庆养老院探访"></div><div class="switch-row"><label for="default-music">${icon('music')} 默认添加背景音乐</label><input type="checkbox" class="switch" id="default-music" name="music" ${c.preferences.music ? 'checked' : ''}></div></section><div class="sticky-actions"><button class="primary" type="submit">${icon('save')} 保存本地设置</button><button class="secondary" type="submit" data-next="people">下一步：配置数字人 ${icon('arrow-right')}</button><span id="settings-error" class="inline-error error-slot" role="alert"></span></div></form><aside class="settings-guide"><h3>第一次使用，跟着做就好。</h3><ol><li><strong>开通服务，填好 Key</strong>到火山引擎控制台获取语音 Key 和视频 AK / SK，填入左侧表单。</li><li><strong>添加你自己的数字人</strong>准备一张正面照片。绑定已有音色，或先用录音单独复刻。</li><li><strong>选择机构素材，开始制作</strong>放入实拍视频和真实介绍，写下这条视频的想法。</li></ol><p>留空的 Key 会保留原配置。保存后输入框自动清空，页面只显示是否已配置。</p><div class="path-note">当前项目<br>${E(c.project)}<p style="margin-top:10px">配置位于项目的 .montage 目录，更新 skill 后仍会保留。</p></div></aside></div>`;
   $('#storage-provider').addEventListener('change', e => { $('#tos-fields').hidden = e.target.value !== 'tos'; $('#tmpfile-note').hidden = e.target.value === 'tos'; });
+  $('#clone-mode').addEventListener('change', e => { $('#speaker-pool-fields').hidden = e.target.value !== 'prepaid'; });
   if(c.agent.mode==='local'){
     $('#agent-config-status').closest('section').hidden=true;
     const guide=$('.settings-guide ol');
@@ -253,13 +312,13 @@ function agentStatusBlock() {
   return `<div class="agent-status-box"><span>${icon('clapper')}</span><div><strong>${a.uncertain ? '等待进度回传' : a.state === 'connected' ? a.label+' 已连接' : a.installed ? '已检测到 Agent' : '等待宿主连接'}</strong><p>${E(a.message)}</p></div><button type="button" class="secondary" data-action="check-agent">${icon('retry')}检查连接</button></div>${a.probe==='passed' ? '<p class="saved-mark">网页提交 → Agent 接收 → 回传进度，连接自检已通过。</p>' : ['pending','claimed'].includes(a.probe) ? '<p class="form-help">连接自检中，正在等待 Agent 回传…</p>' : ''}${a.state !== 'connected' ? `<div class="inline-note"><strong>只需在 Agent 发送一次这句话</strong><p style="margin:8px 0 12px">${E(a.instruction)}</p><button type="button" class="secondary" data-action="copy-agent">复制连接指令 ${icon('text')}</button> ${a.host==='workbuddy'?`<button type="button" class="text-button" data-action="open-workbuddy">打开 WorkBuddy ${icon('arrow-up-right')}</button>`:''}<p style="margin:10px 0 0">Agent 接上后，这里自动变为已连接。之后直接在网页点“开始制作”。</p></div>` : ''}`;
 }
 function renderPeople() {
-  main.innerHTML = `${heading('每条视频，都有自己的主角。','照片、音色和社媒署名绑定在一起，选好人物就能直接制作。',`<button class="secondary" data-action="add-person">${icon('plus')} 添加数字人</button>`)}<div class="people-grid">${state.config.people.map(p => `<article class="person-card"><div class="portrait-area">${p.hasPortrait ? `<img src="/media/person/${E(p.id)}" alt="${E(p.name)}的数字人照片">` : ''}${p.isDefault ? badge('默认出镜') : ''}</div><div class="person-card-content"><h2>${E(p.name)} ${badge(p.ready ? '已就绪' : '待绑定音色',p.ready ? '' : 'warn')}</h2><p>${E(p.social_media_name || '还没有设置社媒署名')}<br>${p.speaker ? '已绑定专属音色' : p.sample ? '已有声音样本 · 待 Agent 训练' : '添加音色 ID 或声音样本'}</p><button class="secondary" data-action="edit-person" data-id="${E(p.id)}">编辑人物资料 ${icon('arrow-right')}</button></div></article>`).join('')}<button class="add-person" data-action="add-person">${icon('plus')}<strong>添加一位新数字人</strong><small>一张照片，一段声音。<br>让更多人替你讲述。</small></button></div><div id="person-editor">${editPerson !== undefined ? personEditor() : ''}</div>`;
+  main.innerHTML = `${heading('每条视频，都有自己的主角。','照片、音色和社媒署名绑定在一起，选好人物就能直接制作。',`<button class="secondary" data-action="add-person">${icon('plus')} 添加数字人</button>`)}<div class="people-grid">${state.config.people.map(p => `<article class="person-card"><div class="portrait-area">${p.hasPortrait ? `<img src="/media/person/${E(p.id)}" alt="${E(p.name)}的数字人照片">` : ''}${p.isDefault ? badge('默认出镜') : ''}</div><div class="person-card-content"><h2>${E(p.name)} ${badge(p.ready ? '已就绪' : '待绑定音色',p.ready ? '' : 'warn')}</h2><p>${E(p.social_media_name || '还没有设置社媒署名')}<br>${p.speaker ? '已绑定专属音色' : p.sample ? '已有声音样本 · 待复刻' : '添加音色 ID 或声音样本'}</p><button class="secondary" data-action="edit-person" data-id="${E(p.id)}">编辑人物资料 ${icon('arrow-right')}</button></div></article>`).join('')}<button class="add-person" data-action="add-person">${icon('plus')}<strong>添加一位新数字人</strong><small>一张照片，一段声音。<br>让更多人替你讲述。</small></button></div><div id="person-editor">${editPerson !== undefined ? personEditor() : ''}</div>`;
   bindPerson();
 }
 let personFolder = '';
 function personEditor() {
   const p = state.config.people.find(p => p.id === editPerson);
-  return `<section class="panel editor-panel"><div class="editor-heading"><h2>${p ? '编辑 ' + E(p.name) : '添加一个数字人'}</h2><button data-action="close-editor" aria-label="关闭人物编辑">${icon('close')}</button></div><form id="person-form">${!p ? `<div class="form-group"><div class="label-row"><label>照片与声音样本</label><button type="button" class="text-button" data-action="import-person">导入文件夹 ${icon('arrow-up-right')}</button></div><button type="button" class="source-select" data-action="pick-person"><span class="source-icon">${icon('person')}</span><span class="source-content"><strong>${E(personFolder ? personFolder.split('/').filter(Boolean).pop() : '选择人物文件夹')}</strong><small>每个文件夹一张正面照片，可选一段干净的单人录音</small></span>${icon('plus')}</button><input class="input" name="folder" value="${E(personFolder)}" placeholder="也可以粘贴本地文件夹路径" style="margin-top:10px"></div>` : `<input type="hidden" name="id" value="${E(p.id)}">`}<div class="form-row"><div class="form-group"><label class="field-label" for="person-name" style="margin-bottom:10px">人物名称</label><input id="person-name" name="name" class="input" value="${E(p?.name)}" placeholder="例如：小林" ${p ? 'required' : ''}></div><div class="form-group"><label class="field-label" for="person-social" style="margin-bottom:10px">社媒署名</label><input id="person-social" name="social_media_name" class="input" value="${E(p?.social_media_name)}" placeholder="例如：小林带你看养老" required></div></div><div class="form-group"><label class="field-label" for="person-speaker" style="margin-bottom:10px">已有音色 ID<span class="optional">有音色直接填写；没有可留空</span></label><input id="person-speaker" name="speaker" class="input" value="${E(p?.speaker)}" placeholder="例如：S_xxxxxxxx"><p class="form-help">没有音色时，请在人物文件夹提供录音，设置好声音复刻方式后由 Agent 完成训练。</p></div><details class="form-group"><summary class="field-label">自定义音色与语速<span class="optional">高级选项</span></summary><div class="form-row" style="margin-top:15px"><div class="form-group"><label class="field-label" for="custom-speaker">自定义音色 ID</label><input class="input" id="custom-speaker" name="custom_speaker_id" value="${E(p?.custom_speaker_id)}" placeholder="speaker 为 custom_speaker_id 时填写"></div><div class="form-group"><label class="field-label" for="speech-rate">语速参数</label><input class="input" type="number" min="-50" max="100" id="speech-rate" name="speech_rate" value="${p?.speech_rate ?? -3}"><p class="form-help">0 为标准速度，负数稍慢，正数稍快。</p></div></div></details><div class="switch-row"><label for="person-default">设为默认出镜人物</label><input class="switch" type="checkbox" name="default" id="person-default" ${p?.isDefault || !state.config.people.length ? 'checked' : ''}></div><div id="person-error" class="inline-error error-slot" role="alert"></div><button class="primary" type="submit" style="margin-top:16px">${icon('save')} 保存人物资料</button></form></section>`;
+  return `<section class="panel editor-panel"><div class="editor-heading"><h2>${p ? '编辑 ' + E(p.name) : '添加一个数字人'}</h2><button data-action="close-editor" aria-label="关闭人物编辑">${icon('close')}</button></div><form id="person-form">${!p ? `<div class="form-group"><div class="label-row"><label>照片与声音样本</label><button type="button" class="text-button" data-action="import-person">导入文件夹 ${icon('arrow-up-right')}</button></div><button type="button" class="source-select" data-action="pick-person"><span class="source-icon">${icon('person')}</span><span class="source-content"><strong>${E(personFolder ? personFolder.split('/').filter(Boolean).pop() : '选择人物文件夹')}</strong><small>每个文件夹一张正面照片，可选一段干净的单人录音</small></span>${icon('plus')}</button><input class="input" name="folder" value="${E(personFolder)}" placeholder="也可以粘贴本地文件夹路径" style="margin-top:10px"></div>` : `<input type="hidden" name="id" value="${E(p.id)}">`}<div class="form-row"><div class="form-group"><label class="field-label" for="person-name" style="margin-bottom:10px">人物名称</label><input id="person-name" name="name" class="input" value="${E(p?.name)}" placeholder="例如：小林" ${p ? 'required' : ''}></div><div class="form-group"><label class="field-label" for="person-social" style="margin-bottom:10px">社媒署名</label><input id="person-social" name="social_media_name" class="input" value="${E(p?.social_media_name)}" placeholder="例如：小林带你看养老" required></div></div><div class="form-group"><label class="field-label" for="person-speaker" style="margin-bottom:10px">已有音色 ID<span class="optional">有音色直接填写；没有可留空</span></label><input id="person-speaker" name="speaker" class="input" value="${E(p?.speaker)}" placeholder="例如：S_xxxxxxxx"><p class="form-help">只有录音时，保存后请助手单独发起音色复刻。成功后音色会自动绑定，再开始制作。</p></div><details class="form-group"><summary class="field-label">自定义音色与语速<span class="optional">高级选项</span></summary><div class="form-row" style="margin-top:15px"><div class="form-group"><label class="field-label" for="custom-speaker">自定义音色 ID</label><input class="input" id="custom-speaker" name="custom_speaker_id" value="${E(p?.custom_speaker_id)}" placeholder="speaker 为 custom_speaker_id 时填写"></div><div class="form-group"><label class="field-label" for="speech-rate">语速参数</label><input class="input" type="number" min="-50" max="100" id="speech-rate" name="speech_rate" value="${p?.speech_rate ?? -3}"><p class="form-help">0 为标准速度，负数稍慢，正数稍快。</p></div></div></details><div class="switch-row"><label for="person-default">设为默认出镜人物</label><input class="switch" type="checkbox" name="default" id="person-default" ${p?.isDefault || !state.config.people.length ? 'checked' : ''}></div><div id="person-error" class="inline-error error-slot" role="alert"></div><button class="primary" type="submit" style="margin-top:16px">${icon('save')} 保存人物资料</button></form></section>`;
 }
 function bindPerson() {
   const form = $('#person-form'); if (!form) return;

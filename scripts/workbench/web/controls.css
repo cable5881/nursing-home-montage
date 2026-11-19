@@ -52,3 +52,19 @@ summary{list-style:none;position:relative;padding-right:28px;min-height:36px}sum
 input[type=search]::-webkit-search-cancel-button{appearance:none;width:14px;height:14px;cursor:pointer;background:var(--muted);-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m6 6 12 12M18 6 6 18' stroke='black' stroke-width='2'/%3E%3C/svg%3E") center/contain no-repeat}
 
 summary,.per-video-preferences summary,.publication-edit summary,.cover-photo-settings summary,.queue-next summary{min-height:44px;display:flex;align-items:center}.disclosure-chevron{top:50%;transform:translateY(-50%)}
+
+.settings-service + .settings-service {
+  border-top: 1px solid #edf0e9;
+  margin-top: 24px;
+  padding-top: 24px;
+}
+.settings-service-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 16px;
+}
+.settings-service-heading h3 { margin: 0; font-size: clamp(15px, 1.05vw, 18px); }
+.settings-service-heading .settings-links { margin: 0; }

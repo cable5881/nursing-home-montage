@@ -24,6 +24,8 @@
 
 导入按名称和素材指纹去重，复制到.montage/people；图片规范为PNG，声音规范为单声道WAV，不改变语速。查看 `project.py people`。人物可先只有图片，随后绑定已有音色；缺音频且没有音色时保持needs_voice，不算就绪。
 
+工作台保存人物资料时会保存已填写的音色 ID 或导入录音。只有录音时，请在「设置 → 制作服务 → 语音与音色复刻」选好复刻方式，再请助手为该人物单独执行复刻。工作台制作任务直接使用已绑定的音色。复刻成功后，人物资料会自动绑定音色 ID 和自定义音色 ID（如有），再提交制作。
+
 - 已有音色：`project.py bind <人物名或ID> --speaker <音色ID>`；自定义音色另加 --custom <ID>，speaker为custom_speaker_id。
 - 默认人物：`project.py default <人物名或ID>`。
 - 只有录音：`project.py train <人物名或ID>`。先在连接里选clone_mode：prepaid使用speaker_pool空闲槽位；postpaid创建独立自定义音色，首次正式合成会产生平台槽位费。服务模式未选择时只补问这一项。也可单次 --speaker 指定未占用槽位。
