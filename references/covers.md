@@ -45,4 +45,4 @@ cover.py 选图／提帧、准备输入和编辑器，cover_renderer.mjs 复用�
 
 本次 settings.cover.enabled=false 可关闭；提供 settings.cover.image 时使用该 1080×1920 原图，否则自动生成。原图先显示在编辑 HTML，改动后按 C 款重排。封面／文字与原图需语义对应，由智能体核对。新封面导出后，需通过制作流程更新视频首帧；浏览器不会自动改包内 MP4。
 
-输出为独立 PNG，并随最终 MP4、发布 TXT 与自包含编辑 HTML 一起进入发布 ZIP。内部 cover.json 合并输入、素材来源、布局诊断与哈希，不拆成多份清单。
+默认发布包只含最终 MP4、独立封面 PNG 与发布 TXT，封面编辑 HTML 在工程内部供工作台使用。明确要求离线编辑器时才额外交付 HTML。内部 cover.json 合并输入、素材来源、布局诊断与哈希，不拆成多份清单。

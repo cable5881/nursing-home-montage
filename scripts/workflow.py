@@ -73,25 +73,26 @@ def inventory(source,job):
     if not source.is_dir():raise ValueError('Input must be one institution directory')
     if job==source or source in job.parents:raise ValueError('Output must be outside the input material directory')
     if (job/'inventory.json').exists() and Path(read(job/'inventory.json')['source'])!=source:raise ValueError('This job belongs to another input')
-    rows=[];blocked=[]
+    from shared_cache import SharedCache
+    cache=SharedCache(project_root());rows=[];blocked=[];hits=0
+    def analyze(p):
+        ext=p.suffix.lower()
+        if ext in ('.txt','.md','.docx','.pdf'):return {'kind':'text','text':extract_text(p)}
+        m=probe(p);v=next((x for x in m['streams'] if x['codec_type']=='video'),None)
+        if not v:raise RuntimeError('No video stream: '+str(p))
+        return {'kind':'image' if ext in ('.jpg','.jpeg','.png','.webp','.heic') else 'video','width':v['width'],'height':v['height'],'duration':float(m['format'].get('duration',0))}
+    analyzer_version='inventory-v2-'+sha(Path(__file__))
     for p in sorted(source.rglob('*')):
         if not p.is_file() or any(x.startswith('.') for x in p.relative_to(source).parts):continue
         if re.search(r'access.?key|secret|credential|凭据|密钥',p.name,re.I):continue
-        ext=p.suffix.lower();row={'path':str(p.relative_to(source)),'sha256':sha(p),'bytes':p.stat().st_size}
-        if ext in ('.txt','.md','.docx','.pdf'):
-            row['kind']='text'
-            try:row['text']=extract_text(p)
-            except RuntimeError as e:blocked.append(str(e));continue
-        elif ext in ('.mp4','.mov','.m4v','.mkv','.avi','.webm','.jpg','.jpeg','.png','.webp','.heic'):
-            m=probe(p);v=next((s for s in m['streams'] if s['codec_type']=='video'),None)
-            if not v:continue
-            row.update(kind='image' if ext in ('.jpg','.jpeg','.png','.webp','.heic') else 'video',width=v['width'],height=v['height'],duration=float(m['format'].get('duration',0)))
-        else:continue
-        rows.append(row)
+        if p.suffix.lower() not in ('.txt','.md','.docx','.pdf','.mp4','.mov','.m4v','.mkv','.avi','.webm','.jpg','.jpeg','.png','.webp','.heic'):continue
+        try:details,hit,content_hash=cache.material(p,analyze,analyzer_version)
+        except RuntimeError as e:blocked.append(str(e));continue
+        rows.append({'path':str(p.relative_to(source)),'sha256':content_hash,'bytes':p.stat().st_size,**details});hits+=int(hit)
     write(job/'inventory.json',{'source':str(source),'files':rows,'blockedDocuments':blocked})
     (job/'source-text.txt').write_text('\n\n'.join('【'+r['path']+'】\n'+r['text'] for r in rows if r['kind']=='text'), encoding='utf-8')
     state(job,phase='inventoried',input=str(source),next='Read source-text and inspect media; author plan.json using references/plan-schema.md')
-    return {'files':len(rows),'textDocuments':sum(r['kind']=='text' for r in rows),'blockedDocuments':blocked}
+    return {'files':len(rows),'textDocuments':sum(r['kind']=='text' for r in rows),'blockedDocuments':blocked,'cacheHits':hits}
 
 def integer_zh(n):
     chars='零一二三四五六七八九';n=int(n)
@@ -204,7 +205,9 @@ def setup(job,install=False):
         e['tts']['pronunciation_dict']={'tone':list(rules.values())}
     write(job/'avatar-engine.json',e)
     write(job/'meta.json',{'id':job.name,'name':job.name})
-    if install:run(['npm','ci','--ignore-scripts','--no-audit','--no-fund'],cwd=job)
+    if install:
+        from shared_cache import install_dependencies
+        install_dependencies(project_root(),job,template,run)
     return {'project':str(job),'dependenciesInstalled':install}
 
 def align_audio(audio,text,out,cfg,prompt=''):
@@ -247,6 +250,17 @@ def voice(job,reuse=None):
         if Path(existing['audio']).exists() and sha(existing['audio'])==existing['sha256']:
             check=read(existing['alignment'])
             if check.get('passed') and check.get('sha256')==existing['sha256'] and check.get('textSha256')==digest(text):return existing
+    from shared_cache import SharedCache
+    shared=SharedCache(project_root())
+    if not reuse and not out.exists():
+        # Restored files belong to this job; later acceptance can safely delete them.
+        restored=shared.restore_files('voice',key,{'audio':out/'narration.mp3','alignment':out/'alignment-check.json'},owner=job)
+        if restored is not None:
+            audio=out/'narration.mp3';checked=read(out/'alignment-check.json')
+            if checked.get('passed') and checked.get('sha256')==sha(audio) and checked.get('textSha256')==digest(text):
+                result={'audio':str(audio),'sha256':sha(audio),'duration':decoded_duration(audio),'alignment':str(out/'alignment-check.json'),'textSha256':digest(text),'cacheKey':key,'reusedVerifiedVoice':True}
+                write(job/'voice.json',result);state(job,phase='voice_ready',next='build');return result
+            raise RuntimeError('Cached voice alignment does not match its audio/text; refuse regeneration until reviewed')
     cached=read(cache) if cache.exists() else None
     if not reuse and not out.exists() and cached and Path(cached['audio']).is_file() and sha(cached['audio'])==cached['sha256'] and Path(cached.get('alignment','')).is_file():
         checked=read(cached['alignment'])
@@ -271,6 +285,8 @@ def voice(job,reuse=None):
         r=engine(job,['resume',out,'--audio-only'])
         if r.returncode:raise RuntimeError(r.stdout)
     write(job/'voice.json',{'audio':str(audio),'sha256':sha(audio),'duration':decoded_duration(audio),'alignment':str(out/'alignment-check.json'),'textSha256':digest(text),'cacheKey':key})
-    if not reuse:write(cache,{'audio':str(audio),'sha256':sha(audio),'alignment':str(out/'alignment-check.json')})
+    if not reuse:
+        write(cache,{'audio':str(audio),'sha256':sha(audio),'alignment':str(out/'alignment-check.json')})
+        shared.store_files('voice',key,{'audio':audio,'alignment':out/'alignment-check.json'},{'textSha256':digest(text)},owner=job)
     state(job,phase='voice_ready',next='build')
     return read(job/'voice.json')

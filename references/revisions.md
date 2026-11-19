@@ -2,6 +2,8 @@
 
 已有任务继续使用runtime.json记录的冻结引擎。有task_id只resume，提交不明时先查记录，不因重开窗口重复提交。声音／口型与文案指纹不一致时停止，不删除runtime.json、voice.json解锁。
 
+已验收任务可能只有成品和最少记录，不能对它强行 revise 或假定配音／口型资产仍在。工作台请求的 revisionFromArchive=true 时，从固定素材重新建工程，读取旧稿作上下文，按新任务完整核验；必要服务调用按本次重做授权进行。
+
 ## 改排版或升级样式
 
 `montage.py revise SOURCE --out NEW` 在新目录复用已核验声音、口型、素材和时间线，切到唯一全屏样式，不调用付费服务。可用--platform common或项目测量配置键另存平台版本。重新preflight、核对内容、cover/carve/check/snapshot/render/verify/review，不能沿用旧版布局验收结果。

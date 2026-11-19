@@ -1,0 +1,261 @@
+'use strict';
+const $ = (s, r = document) => r.querySelector(s);
+const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const E = escapeHTML;
+const paths = {
+  clapper:'<path d="M4 8h16v12H4zM4 8l-1-4 16-3 1 4M7 3l3 4M13 2l3 4"/>',
+  grid:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  person:'<circle cx="12" cy="8" r="4"/><path d="M4.5 21v-2a7.5 7.5 0 0 1 15 0v2"/>',
+  settings:'<path d="m9 3-1 3-3 1-2 3 2 2-1 3 2 3 3-1 3 1 3-1 3 1 2-3-1-3 2-2-2-3-3-1-1-3z"/><circle cx="12" cy="11" r="3"/>',
+  folder:'<path d="M3 7V5a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/>',
+  plus:'<path d="M12 5v14M5 12h14"/>',
+  'arrow-right':'<path d="M4 12h15m-6-6 6 6-6 6"/>',
+  'arrow-up-right':'<path d="M6 18 18 6M6 6h12v12"/>',
+  'chevron-right':'<path d="m9 5 7 7-7 7"/>',
+  check:'<path d="m5 12 4 4L19 6"/>',
+  help:'<circle cx="12" cy="12" r="9"/><path d="M9.2 9a3 3 0 0 1 5.8 1c0 2-3 2-3 4M12 17h.01"/>',
+  video:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>',
+  image:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 6"/>',
+  text:'<path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6"/>',
+  shield:'<path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6z"/><path d="m8 12 3 3 5-6"/>',
+  music:'<path d="M9 18V5l11-2v13M9 8l11-2"/><ellipse cx="6" cy="18" rx="3" ry="2"/><ellipse cx="17" cy="16" rx="3" ry="2"/>',
+  play:'<path d="m8 5 11 7-11 7z"/>',
+  download:'<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
+  clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v6l4 2"/>',
+  eye:'<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
+  close:'<path d="m6 6 12 12M6 18 18 6"/>',
+  spark:'<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/>',
+  save:'<path d="M4 3h13l4 4v14H3V3h1M7 3v6h10V3M7 21v-8h10v8"/>',
+  box:'<path d="m12 2 9 5-9 5-9-5zM3 7v10l9 5 9-5V7M12 12v10M7.5 4.5l9 5"/>',
+  retry:'<path d="M3 11a9 9 0 1 1 2 7M3 4v7h7"/>',
+  stop:'<rect x="5" y="5" width="14" height="14" rx="2"/>'
+};
+const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.clapper}</svg>`;
+function hydrateIcons(root = document) { root.querySelectorAll('[data-icon]').forEach(el => { el.innerHTML = icon(el.dataset.icon); }); }
+let state, route = 'create', selectedTask, editPerson, worksFilter = 'all', uploadTarget = 'source', scanResult, toastTimer;
+let createDraft = {};
+const main = $('#main');
+const labels = {create:'制作工作台', works:'我的作品', people:'我的数字人', settings:'服务设置', onboarding:'首次使用指南', task:'制作详情', preview:'成品预览'};
+const statusLabels = {draft:'待开始', queued:'等待接手', running:'制作中', needs_input:'需要补充', failed:'执行中断', interrupted:'可继续', cancelled:'已停止', stopping:'正在停止', completed:'已完成'};
+function statusClass(status) { return status === 'completed' ? '' : ['needs_input','interrupted','queued','draft','stopping'].includes(status) ? 'warn' : ['failed','cancelled'].includes(status) ? 'error' : 'neutral'; }
+function badge(text, cls = '') { return `<span class="badge ${cls}">${E(text)}</span>`; }
+function notify(message, error = false) { const el = $('#toast'); clearTimeout(toastTimer); el.textContent = message; el.classList.toggle('error', error); el.hidden = false; toastTimer = setTimeout(() => el.hidden = true, error ? 6500 : 3800); }
+async function api(path, data, options = {}) {
+  const response = await fetch(path, {method:data === undefined ? 'GET' : 'POST', headers:data === undefined ? {} : {'Content-Type':'application/json'}, body:data === undefined ? undefined : JSON.stringify(data), ...options});
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || '操作没有完成，请重试');
+  return result;
+}
+let draftTimer;
+function saveDraft() { clearTimeout(draftTimer); draftTimer=setTimeout(()=>api('/api/draft',createDraft).catch(()=>notify('草稿暂未保存，请检查本地服务',true)),400); }
+function setRoute(next) { location.hash = next; }
+function updateChrome() {
+  const c = state.config;
+  $('#skill-version').textContent = 'v' + c.version;
+  $('#works-count').textContent = String(state.tasks.filter(t => ['completed','awaiting_acceptance','accepted'].includes(t.status)).reduce((n,t) => n + (t.results?.length || 0), 0) + (state.institutions || []).filter(x => x.reference).length);
+  $('#setup-dot').hidden = allConfigured();
+  const a = c.agent;
+  $('#agent-dot').className = 'status-dot' + (a.uncertain ? ' muted' : a.state === 'connected' ? '' : a.state === 'error' ? ' error' : ' muted');
+  $('#agent-status').textContent = a.uncertain ? '等待进度回传' : a.state === 'connected' ? a.label+' 已连接' : a.state === 'checking' ? '正在连接 Agent…' : a.state === 'error' ? 'Agent 待连接' : '连接 '+a.label;
+  document.querySelectorAll('[data-nav]').forEach(a => { if (a.dataset.nav === (route==='task'?'tasks':['preview','video'].includes(route)?'works':['institution','asset','institution-new'].includes(route)?'library':route)) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
+  $('#page-label').textContent = route==='settings'&&location.hash==='#settings/music'?'配乐管理':labels[route] || labels.create;
+}
+function hasServices() { return ['speech','ak','sk'].every(k => state.config.connection[k]); }
+function hasPerson() { return state.config.people.some(p => p.ready && p.social_media_name); }
+function allConfigured() { return hasServices() && hasPerson() && state.config.agent.state === 'connected'; }
+function heading(title, text, action = '') { return `<div class="page-heading"><div><h1>${title}</h1><p>${text}</p></div>${action}</div>`; }
+function stages(phase = -1, running = false) {
+  return `<section class="workflow ${running ? 'is-running' : ''}" aria-label="制作流程"><div class="workflow-heading"><h2>${running ? '每一步，都看得见' : '一条视频，这样完成'}</h2><p>${phase >= 0 ? '进度按实际制作阶段更新' : '由 Agent 按步骤完成'}</p></div><div class="stage-strip">${state.config.phases.map((name, i) => `<div class="stage ${i < phase ? 'done' : i === phase ? 'active' : ''}"><strong>${E(name)}</strong></div>`).join('')}</div></section>`;
+}
+function previewPanel(result, task) {
+  const institution = state.institutions?.find(x=>x.id===(task?.institutionId||createDraft.institutionId));
+  const reference = institution && !institution.reference ? {...state.reference,available:false} : state.reference;
+  const cover = result?.cover || (reference.available ? reference.cover : null);
+  const video = result?.video || (!task && reference.available ? reference.video : null);
+  return `<aside class="panel preview-panel"><div class="panel-top"><h2>${result ? '本次制作预览' : reference.available ? '已认可的效果参考' : '制作预览'}</h2>${video ? `<button class="text-button" data-action="preview" ${task && result ? `data-id="${E(task.id)}" data-index="${result.index}"` : 'data-reference="true"'}>播放 ${icon('arrow-up-right')}</button>` : badge('9:16','neutral')}</div><div class="preview-frame">${cover ? `<img src="${E(cover)}" alt="${result ? '本次视频封面' : '已认可项目样片封面'}">` : `<div class="preview-empty"><h3>你的下一条<br>好视频，<br>从这里开始。</h3><p>实拍素材 · 数字人口播<br>封面、视频与发布文案，一起交付。</p></div>`}${video ? `<button class="play-button" aria-label="播放${result ? '本次成片' : '项目样片'}" data-action="preview" ${task && result ? `data-id="${E(task.id)}" data-index="${result.index}"` : 'data-reference="true"'}>${icon('play')}</button>` : ''}</div><div class="preview-meta"><span>1080 × 1920 · 竖版</span><span>${result ? '本次作品' : reference.available ? '已认可样片' : '等待本次成片'}</span></div><p class="preview-caption">${!result && !reference.available ? '本次封面和视频生成后，会显示在任务详情。<br>完成的作品自动归入这家机构。' : task && !result ? '这里展示该机构已认可样片。<br>本次封面生成后会自动更新。' : result ? '本次作品会在这里呈现。<br>完成后可预览视频、下载发布包。' : '一段真实的养老生活，一份清楚的介绍。<br>把素材交给 Agent，把故事带给更多人。'}</p><div class="deliverables"><span>${icon('video')}竖版视频</span><span>${icon('image')}独立封面</span><span>${icon('text')}发布文案</span></div></aside>`;
+}
+function taskRows(tasks) {
+  if (!tasks.length) return `<div class="empty-row"><div class="empty-mark">${icon('clapper')}<div><strong>下一条好作品，从这里开始</strong><p>选好素材、写下要求，制作记录会保存在这里。</p></div></div><button class="text-button" data-action="focus-source">开始创作 ${icon('arrow-right')}</button></div>`;
+  return `<div class="task-list">${tasks.map(t => `<div class="task-row"><div class="task-miniature">${t.results[0]?.cover ? `<img src="${E(t.results[0].cover)}" alt="">` : icon('clapper')}</div><div class="task-info"><strong>${E(t.title)}</strong><p>${E(t.personName)} · ${E(t.message)}</p></div>${badge(statusLabels[t.status],statusClass(t.status))}<div class="task-progress"><span>${['completed','awaiting_acceptance','accepted'].includes(t.status) ? '已完成全部阶段' : `${Math.min(t.phase,6)} / 6 阶段完成`}</span><div class="progress-track"><span style="width:${t.progress}%"></span></div></div><a class="text-button" href="#task/${t.id}">查看 ${icon('chevron-right')}</a></div>`).join('')}</div>`;
+}
+function renderCreate() {
+  const c = state.config;
+  const people = c.people;
+  const person = people.find(p => p.id === createDraft.person) || people.find(p => p.isDefault) || people[0];
+  if (person && !createDraft.person) createDraft.person = person.id;
+  const source = createDraft.source || '';
+  const folderName = source.split(/[\\/]/).filter(Boolean).pop();
+  main.innerHTML = `${heading('让实拍素材，讲一个好故事。','从一份机构资料，到一条完整视频。交给你的 Agent。',`<div class="heading-note">${icon('shield')} 本地保存，随时继续</div>`)}${!allConfigured() ? `<div class="setup-banner">${icon('spark')}<div><h3>${!hasServices() || !hasPerson() ? '先用几分钟，准备好你的工作台' : '素材和人物已就绪，连接 Agent 即可制作'}</h3><p>${!hasServices() ? '填好服务 Key，配置一个数字人，以后每次直接开始。' : !hasPerson() ? '补齐人物照片、署名与音色，让每条视频都有自己的主角。' : '沿用 Agent 的 Agent 与 skill，制作进度会同步到这里。'}</p></div><a class="secondary" href="${hasServices() && hasPerson() ? '#settings' : '#onboarding'}">${hasServices() && hasPerson() ? '连接 '+a.label : '开始准备'} ${icon('arrow-right')}</a></div>` : ''}<div class="create-grid"><section class="panel create-panel"><div class="panel-top"><h2>开始一条新视频</h2><span class="draft-label">${icon('save')} 制作草稿自动保留</span></div><form id="create-form"><div class="form-group"><div class="label-row"><label>机构素材</label><button type="button" class="text-button" data-action="import-source">导入文件夹 ${icon('arrow-up-right')}</button></div><button type="button" class="source-select" id="source-drop" data-action="pick-source"><span class="source-icon">${icon('folder')}</span><span class="source-content"><strong>${E(folderName || '选择本地素材文件夹')}</strong><small>${source ? '已选择 · 点击更换' : '实拍视频、照片，以及机构的文字介绍'}</small></span>${icon(source ? 'check' : 'plus')}</button>${source ? `<p class="source-path">${E(source)}</p>` : ''}<div id="source-info">${sourceInfo()}</div><details class="file-table"><summary>手动填写文件夹路径</summary><input class="input" name="source" value="${E(source)}" placeholder="粘贴本地文件夹路径"><button class="text-button" type="button" data-action="scan-source">读取这个文件夹 ${icon('arrow-right')}</button></details></div><div class="form-group"><div class="label-row"><label for="requirements">你想怎么介绍这家机构？<span class="optional">可选</span></label></div><textarea id="requirements" name="requirements" placeholder="比如：带家属看看这里的一天，突出餐饮、活动和居住环境，语气亲切自然。">${E(createDraft.requirements)}</textarea><p class="form-help">AI 会结合真实资料写文案、选镜头。你只需要说清楚想表达什么。</p></div><details class="form-group" ${createDraft.facts ? 'open' : ''}><summary class="field-label">补充机构介绍<span class="optional">素材里没有文字介绍时填写</span></summary><textarea name="facts" aria-label="机构事实介绍" style="margin-top:11px" placeholder="填写机构名称、位置、设施与服务等真实信息。">${E(createDraft.facts)}</textarea></details><div class="form-group"><div class="label-row"><label for="person-select">这次，谁来出镜？</label><a class="text-button" href="#people">管理数字人 ${icon('chevron-right')}</a></div><div class="person-picker">${person?.hasPortrait ? `<img class="person-thumb" id="selected-portrait" src="/media/person/${E(person.id)}" alt="${E(person.name)}">` : `<span class="person-thumb" style="display:grid;place-items:center">${icon('person')}</span>`}<select name="person" id="person-select" ${!people.length ? 'disabled' : ''}>${people.length ? people.map(p => `<option value="${E(p.id)}" ${person?.id === p.id ? 'selected' : ''}>${E(p.name)}${p.social_media_name ? ' · ' + E(p.social_media_name) : ' · 待补齐署名'}</option>`).join('') : '<option>先添加一个数字人</option>'}</select>${person?.ready ? badge('已就绪') : badge('待配置','warn')}</div></div><div class="form-row"><div class="form-group"><label class="field-label" for="title-input" style="margin-bottom:9px">给作品起个名字<span class="optional">可选</span></label><input class="input" id="title-input" name="title" value="${E(createDraft.title)}" placeholder="例如：养老院探访 · 日常生活"></div><div class="form-group"><label class="field-label" for="count-input" style="margin-bottom:9px">制作数量</label><select name="count" id="count-input">${[1,2,3,5,10].map(n => `<option value="${n}" ${Number(createDraft.count || 1) === n ? 'selected' : ''}>${n} 条${n > 1 ? ' · 同机构不同讲法' : ''}</option>`).join('')}</select></div></div><div class="switch-row"><label for="music-check">${icon('music')} 添加轻柔背景音乐</label><input class="switch" id="music-check" name="music" type="checkbox" ${(createDraft.music ?? c.preferences.music) ? 'checked' : ''}></div><div class="error-slot" id="create-error" role="alert"></div><button class="primary wide" type="submit">${icon('spark')} 开始制作 ${icon('arrow-right')}</button><p class="submit-hint">自动保存任务 · 页面可随时关闭，保持本地服务运行即可</p></form></section>${previewPanel()}</div>${stages()}<div class="section-heading"><h2>最近的制作</h2><a class="text-button" href="#works">全部作品 ${icon('arrow-right')}</a></div><div id="recent-tasks">${taskRows(state.tasks.slice(0,3))}</div>`;
+  bindCreate();
+}
+function sourceInfo() { return scanResult && scanResult.folder === createDraft.source ? `<div class="source-files"><span>${icon('video')}${scanResult.counts.video} 段视频</span><span>${icon('image')}${scanResult.counts.image} 张照片</span><span>${icon('text')}${scanResult.counts.text} 份介绍</span></div><details class="file-table"><summary>查看 ${scanResult.files.length} 个素材文件</summary><ul>${scanResult.files.slice(0,100).map(f => `<li>${icon(f.kind === 'video' ? 'video' : f.kind === 'image' ? 'image' : 'text')}${E(f.name)}</li>`).join('')}</ul></details>` : ''; }
+function bindCreate() {
+  const f = $('#create-form');
+  f.addEventListener('input', () => { const v = Object.fromEntries(new FormData(f)); createDraft = {...v, music:f.elements.music.checked}; saveDraft(); });
+  f.addEventListener('submit', async e => {
+    e.preventDefault();
+    const button = f.querySelector('[type=submit]');
+    const error = $('#create-error'); error.className = 'inline-error error-slot'; error.textContent = '';
+    await busy(button, async () => {
+      try {
+        const t = await api('/api/tasks', {...createDraft, source: f.elements.source.value || createDraft.source, music:f.elements.music.checked, person:f.elements.person.value, count:Number(f.elements.count.value)});
+        await refresh(false);
+        if (state.config.agent.state === 'connected') {
+          await api(`/api/tasks/${t.id}/start`, {}); await refresh(false); setRoute('task/' + t.id);
+        } else { notify('制作要求已保存，连接 Agent 后即可开始'); setRoute('task/' + t.id); }
+      } catch (err) { error.textContent = err.message; }
+    });
+  });
+  $('#person-select').addEventListener('change', () => { const person = state.config.people.find(p => p.id === f.elements.person.value); const img = $('#selected-portrait'); if (img && person?.hasPortrait) {img.src = '/media/person/' + person.id; img.alt = person.name;} });
+}
+function credentialField(name, label, saved, placeholder) { return `<div class="form-group"><div class="label-row"><label for="key-${name}">${label}</label>${saved ? `<span class="saved-mark">${icon('check')} 已保存</span>` : badge('待填写','warn')}</div><div class="input-wrap"><input id="key-${name}" class="input" name="${name}" type="password" autocomplete="new-password" spellcheck="false" placeholder="${saved ? '已配置 · 留空保留原值' : placeholder}"><button type="button" class="reveal" data-action="reveal" aria-label="显示${label}" aria-pressed="false">${icon('eye')}</button></div></div>`; }
+function renderSettings() {
+  const c = state.config, conn = c.connection;
+  main.innerHTML = `${heading('先准备好，以后就简单了。','服务与数字人只需配置一次。设置保存在你的本地项目。')}<div class="settings-layout"><form class="settings-stack" id="settings-form"><section class="panel"><div class="settings-section-heading"><span>1</span><div><h2>连接语音与数字人服务</h2><p>使用火山引擎语音与 OmniHuman 2.0，所有数字人共用这套连接。</p></div></div><div class="settings-links"><a href="https://console.volcengine.com/speech/app" target="_blank" rel="noreferrer">获取语音 API Key ${icon('arrow-up-right')}</a><a href="https://console.volcengine.com/iam/keymanage/" target="_blank" rel="noreferrer">获取视频 AK / SK ${icon('arrow-up-right')}</a></div>${credentialField('api_key','语音 API Key',conn.speech,'填写语音服务的 API Key')}<div class="form-row">${credentialField('ak','Access Key ID',conn.ak,'填写 Access Key ID')}${credentialField('sk','Secret Access Key',conn.sk,'填写 Secret Access Key')}</div><p class="form-help">语音 Key 与视频 AK / SK 来自不同服务。已保存标记表示本地配置完整，实际服务权限会在制作预检时检查。</p></section><section class="panel"><div class="settings-section-heading"><span>2</span><div><h2>文件中转与声音复刻</h2><p>推荐保留默认中转方式，不用额外申请存储服务。</p></div></div><div class="form-group"><label class="field-label" for="storage-provider" style="margin-bottom:10px">音频文件中转</label><select id="storage-provider" name="storage_provider"><option value="tmpfile" ${conn.storage.provider === 'tmpfile' ? 'selected' : ''}>tmpfile · 无需账号和 Key</option><option value="tos" ${conn.storage.provider === 'tos' ? 'selected' : ''}>TOS · 使用自己的存储桶</option></select></div><div id="tos-fields" ${conn.storage.provider !== 'tos' ? 'hidden' : ''}><div class="form-group"><label class="field-label" for="bucket">存储桶名称</label><input class="input" name="bucket" id="bucket" value="${E(conn.storage.bucket || '')}"></div><div class="form-row"><div class="form-group"><label class="field-label" for="region">区域</label><input class="input" name="region" id="region" placeholder="cn-beijing" value="${E(conn.storage.region || '')}"></div><div class="form-group"><label class="field-label" for="endpoint">Endpoint</label><input class="input" name="endpoint" id="endpoint" placeholder="tos-cn-beijing.volces.com" value="${E(conn.storage.endpoint || '')}"></div></div></div><p class="form-help" id="tmpfile-note" ${conn.storage.provider === 'tos' ? 'hidden' : ''}>tmpfile 用于向数字人服务传递音频。持有链接者可下载，文件 7 天后自动删除。</p><div class="form-group" style="margin-top:24px"><label class="field-label" for="clone-mode" style="margin-bottom:10px">新增声音时的复刻方式</label><select name="clone_mode" id="clone-mode"><option value="">以后再选 · 已绑定音色不受影响</option><option value="prepaid" ${conn.cloneMode === 'prepaid' ? 'selected' : ''}>使用已有预付费音色槽位</option><option value="postpaid" ${conn.cloneMode === 'postpaid' ? 'selected' : ''}>创建后付费音色 · 首次正式合成产生槽位费</option></select></div><div class="form-group"><label class="field-label" for="speaker-pool" style="margin-bottom:10px">空闲音色槽位<span class="optional">预付费模式填写</span></label><input class="input" name="speaker_pool" id="speaker-pool" value="${E(conn.speakerPool.join(', '))}" placeholder="多个音色 ID 用逗号分隔"></div></section><section class="panel"><div class="settings-section-heading"><span>3</span><div><h2>让 Agent 接手制作</h2><p>使用电脑上已安装的 Agent 与 skill，不需要再配一套大模型 Key。</p></div></div><div id="agent-config-status">${agentStatusBlock()}</div><p class="inline-note">首次连接时，把下方的连接指令发送给 Agent。保持这个 Agent 对话运行，之后页面负责提交任务和显示进度。</p></section><section class="panel"><div class="settings-section-heading"><span>${icon('settings')}</span><div><h2>你的制作偏好</h2><p>这些设置将用于之后创建的新任务。</p></div></div><div class="form-group"><label class="field-label" for="cover-header" style="margin-bottom:10px">封面固定头标</label><input class="input" name="coverHeader" id="cover-header" value="${E(c.preferences.coverHeader)}" placeholder="例如：重庆养老院探访"></div><div class="switch-row"><label for="default-music">${icon('music')} 默认添加背景音乐</label><input type="checkbox" class="switch" id="default-music" name="music" ${c.preferences.music ? 'checked' : ''}></div></section><div class="sticky-actions"><button class="primary" type="submit">${icon('save')} 保存本地设置</button><button class="secondary" type="submit" data-next="people">下一步：配置数字人 ${icon('arrow-right')}</button><span id="settings-error" class="inline-error error-slot" role="alert"></span></div></form><aside class="settings-guide"><h3>第一次使用，跟着做就好。</h3><ol><li><strong>开通服务，填好 Key</strong>到火山引擎控制台获取语音 Key 和视频 AK / SK，填入左侧表单。</li><li><strong>添加你自己的数字人</strong>准备一张正面照片，绑定已有音色；也可以提供录音，让 Agent 完成声音复刻。</li><li><strong>选择机构素材，开始制作</strong>放入实拍视频和真实介绍，写下这条视频的想法。</li></ol><p>留空的 Key 会保留原配置。保存后输入框自动清空，页面只显示是否已配置。</p><div class="path-note">当前项目<br>${E(c.project)}<p style="margin-top:10px">配置位于项目的 .montage 目录，更新 skill 后仍会保留。</p></div></aside></div>`;
+  $('#storage-provider').addEventListener('change', e => { $('#tos-fields').hidden = e.target.value !== 'tos'; $('#tmpfile-note').hidden = e.target.value === 'tos'; });
+  $('#settings-form').addEventListener('submit', async e => {
+    e.preventDefault(); const next = e.submitter?.dataset.next; const form = e.target, data = Object.fromEntries(new FormData(form)); $('#settings-error').textContent = '';
+    await busy(form.querySelector('[type=submit]'), async () => {
+      try { await api('/api/config', {connection:data, preferences:{coverHeader:data.coverHeader, music:form.elements.music.checked}}); await refresh(false); if(next)setRoute(next); else renderSettings(); notify('设置已保存到本地项目'); }
+      catch (err) { $('#settings-error').textContent = err.message; }
+    });
+  });
+}
+function agentStatusBlock() {
+  const a = state.config.agent;
+  return `<div class="agent-status-box"><span>${icon('clapper')}</span><div><strong>${a.uncertain ? '等待进度回传' : a.state === 'connected' ? a.label+' 已连接' : a.installed ? '已检测到 Agent' : '等待宿主连接'}</strong><p>${E(a.message)}</p></div><button type="button" class="secondary" data-action="check-agent">${icon('retry')}检查连接</button></div>${a.probe==='passed' ? '<p class="saved-mark">网页提交 → Agent 接收 → 回传进度，连接自检已通过。</p>' : ['pending','claimed'].includes(a.probe) ? '<p class="form-help">连接自检中，正在等待 Agent 回传…</p>' : ''}${a.state !== 'connected' ? `<div class="inline-note"><strong>只需在 Agent 发送一次这句话</strong><p style="margin:8px 0 12px">${E(a.instruction)}</p><button type="button" class="secondary" data-action="copy-agent">复制连接指令 ${icon('text')}</button> ${a.host==='workbuddy'?`<button type="button" class="text-button" data-action="open-workbuddy">打开 WorkBuddy ${icon('arrow-up-right')}</button>`:''}<p style="margin:10px 0 0">Agent 接上后，这里自动变为已连接。之后直接在网页点“开始制作”。</p></div>` : ''}`;
+}
+function renderPeople() {
+  main.innerHTML = `${heading('每条视频，都有自己的主角。','照片、音色和社媒署名绑定在一起，选好人物就能直接制作。',`<button class="secondary" data-action="add-person">${icon('plus')} 添加数字人</button>`)}<div class="people-grid">${state.config.people.map(p => `<article class="person-card"><div class="portrait-area">${p.hasPortrait ? `<img src="/media/person/${E(p.id)}" alt="${E(p.name)}的数字人照片">` : ''}${p.isDefault ? badge('默认出镜') : ''}</div><div class="person-card-content"><h2>${E(p.name)} ${badge(p.ready ? '已就绪' : '待绑定音色',p.ready ? '' : 'warn')}</h2><p>${E(p.social_media_name || '还没有设置社媒署名')}<br>${p.speaker ? '已绑定专属音色' : p.sample ? '已有声音样本 · 待 Agent 训练' : '添加音色 ID 或声音样本'}</p><button class="secondary" data-action="edit-person" data-id="${E(p.id)}">编辑人物资料 ${icon('arrow-right')}</button></div></article>`).join('')}<button class="add-person" data-action="add-person">${icon('plus')}<strong>添加一位新数字人</strong><small>一张照片，一段声音。<br>让更多人替你讲述。</small></button></div><div id="person-editor">${editPerson !== undefined ? personEditor() : ''}</div>`;
+  bindPerson();
+}
+let personFolder = '';
+function personEditor() {
+  const p = state.config.people.find(p => p.id === editPerson);
+  return `<section class="panel editor-panel"><div class="editor-heading"><h2>${p ? '编辑 ' + E(p.name) : '添加一个数字人'}</h2><button data-action="close-editor" aria-label="关闭人物编辑">${icon('close')}</button></div><form id="person-form">${!p ? `<div class="form-group"><div class="label-row"><label>照片与声音样本</label><button type="button" class="text-button" data-action="import-person">导入文件夹 ${icon('arrow-up-right')}</button></div><button type="button" class="source-select" data-action="pick-person"><span class="source-icon">${icon('person')}</span><span class="source-content"><strong>${E(personFolder ? personFolder.split('/').filter(Boolean).pop() : '选择人物文件夹')}</strong><small>每个文件夹一张正面照片，可选一段干净的单人录音</small></span>${icon('plus')}</button><input class="input" name="folder" value="${E(personFolder)}" placeholder="也可以粘贴本地文件夹路径" style="margin-top:10px"></div>` : `<input type="hidden" name="id" value="${E(p.id)}">`}<div class="form-row"><div class="form-group"><label class="field-label" for="person-name" style="margin-bottom:10px">人物名称</label><input id="person-name" name="name" class="input" value="${E(p?.name)}" placeholder="例如：小林" ${p ? 'required' : ''}></div><div class="form-group"><label class="field-label" for="person-social" style="margin-bottom:10px">社媒署名</label><input id="person-social" name="social_media_name" class="input" value="${E(p?.social_media_name)}" placeholder="例如：小林带你看养老" required></div></div><div class="form-group"><label class="field-label" for="person-speaker" style="margin-bottom:10px">已有音色 ID<span class="optional">有音色直接填写；没有可留空</span></label><input id="person-speaker" name="speaker" class="input" value="${E(p?.speaker)}" placeholder="例如：S_xxxxxxxx"><p class="form-help">没有音色时，请在人物文件夹提供录音，设置好声音复刻方式后由 Agent 完成训练。</p></div><details class="form-group"><summary class="field-label">自定义音色与语速<span class="optional">高级选项</span></summary><div class="form-row" style="margin-top:15px"><div class="form-group"><label class="field-label" for="custom-speaker">自定义音色 ID</label><input class="input" id="custom-speaker" name="custom_speaker_id" value="${E(p?.custom_speaker_id)}" placeholder="speaker 为 custom_speaker_id 时填写"></div><div class="form-group"><label class="field-label" for="speech-rate">语速参数</label><input class="input" type="number" min="-50" max="100" id="speech-rate" name="speech_rate" value="${p?.speech_rate ?? -3}"><p class="form-help">0 为标准速度，负数稍慢，正数稍快。</p></div></div></details><div class="switch-row"><label for="person-default">设为默认出镜人物</label><input class="switch" type="checkbox" name="default" id="person-default" ${p?.isDefault || !state.config.people.length ? 'checked' : ''}></div><div id="person-error" class="inline-error error-slot" role="alert"></div><button class="primary" type="submit" style="margin-top:16px">${icon('save')} 保存人物资料</button></form></section>`;
+}
+function bindPerson() {
+  const form = $('#person-form'); if (!form) return;
+  form.addEventListener('submit', async e => { e.preventDefault(); $('#person-error').textContent = ''; await busy(form.querySelector('[type=submit]'), async () => {
+    try { const v = Object.fromEntries(new FormData(form)); if (!v.name) delete v.name; await api('/api/people', {...v, default:form.elements.default.checked}); editPerson = undefined; personFolder = ''; await refresh(false); renderPeople(); notify('人物资料已保存'); }
+    catch (err) { $('#person-error').textContent = err.message; }
+  }); });
+}
+function renderWorks() {
+  const filtered = state.tasks.filter(t => worksFilter === 'all' || (worksFilter === 'completed' ? ['completed','awaiting_acceptance','accepted'].includes(t.status) : !['completed','awaiting_acceptance','accepted'].includes(t.status)));
+  main.innerHTML = `${heading('好故事，慢慢积累。','每一条制作记录和成品，都保存在你的本地工作空间。',`<a class="primary" href="#create">${icon('plus')} 新建制作</a>`)}<div class="filter-tabs" role="group" aria-label="筛选作品">${[['all','全部制作'],['completed','已完成'],['active','进行与待处理']].map(([id,label]) => `<button data-action="filter" data-filter="${id}" class="${worksFilter === id ? 'active' : ''}" aria-pressed="${worksFilter === id}">${label}</button>`).join('')}</div>${filtered.length ? taskRows(filtered) : `<div class="work-empty">${icon('clapper')}<h2>${worksFilter === 'completed' ? '第一条成片，值得期待。' : '还没有制作记录'}</h2><p>选择机构素材、写下想法，Agent 会逐步完成视频。</p><a href="#create" class="primary">开始制作 ${icon('arrow-right')}</a></div>`}${state.tasks.some(t => ['completed','awaiting_acceptance','accepted'].includes(t.status)) ? `<div class="section-heading"><h2>已完成作品</h2></div><div class="works-grid">${state.tasks.filter(t => ['completed','awaiting_acceptance','accepted'].includes(t.status)).flatMap(t => t.results.map(r => `<article class="work-card"><div class="work-art">${r.cover ? `<img src="${E(r.cover)}" alt="${E(r.title)}封面">` : ''}<div class="work-overlay"><button class="play-button" data-action="preview" data-id="${t.id}" data-index="${r.index}" aria-label="播放${E(r.title)}">${icon('play')}</button></div></div><h2>${E(r.title)}</h2><p>${E(t.personName)} · ${new Date(t.created * 1000).toLocaleDateString('zh-CN')}</p><div class="work-actions"><a href="${E(r.package)}" class="primary" download>${icon('download')} 发布包</a><a href="#task/${t.id}" class="secondary">制作详情</a></div></article>`)).join('')}</div>` : ''}`;
+}
+function renderTask() {
+  const t = state.tasks.find(t => t.id === selectedTask);
+  if (!t) {main.innerHTML = '<div class="work-empty"><h2>没有找到这条制作记录</h2><a href="#works" class="secondary">返回作品</a></div>';return;}
+  const running = ['queued','running','stopping'].includes(t.status);
+  main.innerHTML = `<a href="#works" class="back-link">${icon('arrow-right')} 返回我的作品</a><div class="detail-top"><div><h1>${E(t.title)}</h1><p>${E(t.personName)} · ${t.count} 条视频 · ${new Date(t.created * 1000).toLocaleString('zh-CN')}</p></div><div>${badge(statusLabels[t.status],statusClass(t.status))} <button class="secondary" data-action="open-folder" data-id="${t.id}">${icon('folder')} 打开文件夹</button></div></div><div id="task-stages">${stages(t.phase,running)}</div><div class="detail-layout"><div><section class="panel"><div id="task-current">${taskCurrent(t)}</div><div id="task-controls">${taskControls(t)}</div><div class="section-heading" style="margin-top:25px"><h2 style="font-size:13px">制作动态</h2><span class="subtle" style="font-size:11px">只显示 Agent 的真实记录</span></div><div class="event-log" id="event-log">${eventLog(t)}</div><details class="task-brief"><summary>查看本次制作要求</summary><p>${E(t.requirements || '按机构素材完整介绍，使用默认制作规范。')}</p>${t.facts ? `<p>${E(t.facts)}</p>` : ''}<div class="path">素材：${E(t.source)}<br>工程：${E(t.job)}</div></details></section></div><div id="task-preview">${previewPanel(t.results[0],t)}${['completed','awaiting_acceptance','accepted'].includes(t.status) ? `<div class="panel" style="margin-top:20px"><h2 style="font-size:15px">带上作品，去发布吧。</h2><p class="subtle">发布包包含视频、封面和发布文案。封面与内容可直接在工作台修改。</p>${t.results.map(r => `<a class="primary wide" href="${E(r.package)}" download>${icon('download')} 下载${t.count > 1 ? '第 ' + (r.index + 1) + ' 条' : ''}发布包</a>`).join('')}</div>` : ''}</div></div>`;
+  bindAnswer();
+}
+function taskCurrent(t) {return `<div class="current-step"><span>${icon(['completed','awaiting_acceptance','accepted'].includes(t.status) ? 'check' : t.status === 'needs_input' ? 'help' : 'clapper')}</span><div><h2>${['completed','awaiting_acceptance','accepted'].includes(t.status) ? '制作完成，故事准备好了。' : t.status === 'draft' ? '要求已保存，准备开始。' : t.status === 'needs_input' ? '补充一点信息，就能继续。' : E(state.config.phases[Math.min(t.phase,5)])}</h2><p>${E(t.message)}</p></div></div>`;}
+function taskControls(t) {
+  if (t.status === 'needs_input') return `<form id="answer-form" class="question-box"><h3>Agent 想确认</h3><p>${E(t.question || '请补充本次制作需要的信息。')}</p><textarea name="answer" aria-label="补充给 Agent 的信息" placeholder="在这里回复，Agent 会从当前阶段继续。" required></textarea><button type="submit" class="primary">发送并继续 ${icon('arrow-right')}</button></form>`;
+  if (t.status === 'stopping') return '<p class="inline-note">已请求停止，等待 Agent 结束当前阶段。已有文件和云端任务 ID 会保留。</p>';
+  if (['running','queued'].includes(t.status)) return `<button class="danger-button" data-action="cancel-task" data-id="${t.id}">${icon('stop')} 请求停止制作</button><p class="form-help">已提交的云端任务会保留，恢复时先查询已有结果。</p>`;
+  if (!['completed','awaiting_acceptance','accepted'].includes(t.status)) return state.config.agent.state === 'connected' ? `<button class="primary" data-action="start-task" data-id="${t.id}">${icon(t.status === 'draft' ? 'spark' : 'retry')}${t.status === 'draft' ? '交给 Agent 开始制作' : '从已有阶段继续'}</button>` : `<p class="inline-note">任务已保存在本地。先连接 Agent，再回来开始制作。</p><a href="#settings" class="primary">连接 Agent ${icon('arrow-right')}</a>`;
+  return '';
+}
+function eventLog(t) {return t.events.length ? t.events.map(e => `<div class="event ${E(e.kind)}"><time>${new Date(e.time * 1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}</time><p>${E(e.message)}</p></div>`).join('') : '<p class="subtle">开始后，素材整理、写稿和制作进度会出现在这里。</p>';}
+function bindAnswer() {const form = $('#answer-form'); if(form)form.addEventListener('submit', async e => {e.preventDefault();await busy(form.querySelector('button'), async () => {try {await api(`/api/tasks/${selectedTask}/answer`,{answer:form.elements.answer.value});await refresh(false);renderTask();}catch(err){notify(err.message,true);}});});}
+function renderOnboarding() {
+  const steps = [{done:hasServices(),name:'配置服务连接',text:'准备火山语音 API Key 和视频 AK / SK，填一次就好。',link:'settings',button:'配置服务'},{done:hasPerson(),name:'添加你的数字人',text:'准备人物照片，填好社媒署名，绑定已有音色或提供声音样本。',link:'people',button:'配置数字人'},{done:state.config.agent.state === 'connected',name:'连接 '+state.config.agent.label,text:'打开并登录 Agent，检查连接，让 Agent 能接手制作。',link:'settings',button:'检查连接'},{done:state.tasks.length > 0,name:'选好素材，制作第一条视频',text:'先在机构资料库添加实拍与介绍，再选择人物、数量和本批偏好。',link:'create',button:'开始制作'}];
+  main.innerHTML = `<div class="onboarding-intro"><h1>欢迎，先把工作台准备好。</h1><p>不用看代码，也不用编辑配置文件。跟着下面四步，准备好服务、数字人和素材，就能把第一条视频交给 Agent。</p></div><div class="onboarding-list">${steps.map((s,i)=>`<div class="onboard-step"><span class="step-number">${s.done ? icon('check') : i+1}</span><div class="step-content"><h2>${s.name} ${s.done ? badge('已准备') : ''}</h2><p>${s.text}</p></div><a href="#${s.link}" class="secondary">${s.button} ${icon('arrow-right')}</a></div>`).join('')}</div><div class="onboarding-bottom"><a href="#create" class="primary">进入制作工作台 ${icon('arrow-right')}</a><p>可以先看看界面，准备过程中随时回来继续。</p></div>`;
+}
+function renderPreview() {
+  const hash = location.hash.slice(1).split('/');
+  const task = state.tasks.find(t=>t.id===hash[1]);
+  const result = task?.results.find(r=>r.index===Number(hash[2]||0));
+  const reference = hash[1] === 'reference';
+  const video = reference ? state.reference.video : result?.video;
+  if (!video) {main.innerHTML = '<div class="work-empty"><h2>视频还没有完成</h2><a href="#works" class="secondary">返回我的作品</a></div>';return;}
+  main.innerHTML = `<a class="back-link" href="${reference ? '#create' : '#task/'+E(task.id)}">${icon('arrow-right')} 返回${reference ? '制作工作台' : '制作详情'}</a>${heading(reference ? '已认可的项目样片' : E(result.title),reference ? '真实已交付作品 · 仅作效果参考' : '本次制作完成的成片',result?.package ? `<a class="primary" href="${E(result.package)}" download>${icon('download')} 下载发布包</a>` : '')}<div class="video-view"><video controls playsinline preload="metadata" poster="${E(reference ? state.reference.cover : result.cover)}" src="${E(video)}"></video></div>`;
+}
+function render() {
+  if(!state)return;
+  const parts = (location.hash.slice(1) || 'create').split('/');route = parts[0];selectedTask = parts[1];
+  if(!labels[route])route='create';
+  updateChrome();
+  ({create:renderCreate,settings:renderSettings,people:renderPeople,works:renderWorks,onboarding:renderOnboarding,task:renderTask,preview:renderPreview}[route])();
+}
+async function busy(button, fn) {if (button.disabled)return;button.disabled=true;button.setAttribute('aria-busy','true');try{await fn();}finally{if(button.isConnected){button.disabled=false;button.removeAttribute('aria-busy');}}}
+async function scan(folder) {const result = await api('/api/scan',{folder});scanResult=result;createDraft.source=result.folder;saveDraft();renderCreate();notify(`已读取 ${result.counts.video} 段视频、${result.counts.image} 张照片和 ${result.counts.text} 份介绍`);}
+async function pickFolder(target, button) {
+  await busy(button, async () => {try {const r=await api('/api/pick-folder',{});if(r.cancelled)return;if(target==='source'){await scan(r.folder);}else{personFolder=r.folder;$('#person-editor').innerHTML=personEditor();bindPerson();}}catch(err){notify(err.message,true);}});
+}
+const allowedFile = /\.(mp4|mov|m4v|mkv|avi|webm|jpg|jpeg|png|webp|heic|txt|md|docx|pdf|wav|mp3|m4a|aac|flac|ogg)$/i;
+async function importFolder(files) {
+  const filtered = [...files].filter(f=>allowedFile.test(f.name)&&!(f.webkitRelativePath||f.name).split('/').some(p=>p.startsWith('.')));
+  if(!filtered.length){notify('没有可导入的视频、照片、文字或声音文件',true);return;}
+  const target=uploadTarget;
+  const group=crypto.randomUUID().replaceAll('-','').slice(0,12);
+  let folder;
+  try {
+    for(let i=0;i<filtered.length;i++){
+      const f=filtered[i];notify(`正在导入 ${i+1} / ${filtered.length}：${f.name}`);
+      const response=await fetch(`/api/upload?group=${group}&name=${encodeURIComponent(f.webkitRelativePath||f.name)}`,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f});
+      const result=await response.json();if(!response.ok)throw new Error(result.error);folder=result.folder;
+    }
+    if(target==='source'){await scan(folder);}else{personFolder=folder;$('#person-editor').innerHTML=personEditor();bindPerson();notify('人物素材已导入');}
+  }catch(err){notify('导入未完成：'+err.message,true);}
+  $('#folder-upload').value='';
+}
+document.addEventListener('click', async e=>{
+  const button=e.target.closest('[data-action]');if(!button)return;
+  const action=button.dataset.action;
+  try {
+    if(action==='onboarding')setRoute('onboarding');
+    if(action==='agent-settings')setRoute('settings');
+    if(action==='focus-source'){if(route!=='create')setRoute('create');else $('#source-drop')?.focus();}
+    if(action==='pick-source')await pickFolder('source',button);
+    if(action==='pick-person')await pickFolder('person',button);
+    if(action==='scan-source')await busy(button,()=>scan($('#create-form').elements.source.value));
+    if(action==='import-source'||action==='import-person'){uploadTarget=action==='import-source'?'source':'person';$('#folder-upload').click();}
+    if(action==='reveal'){await toggleCredentialVisibility(button);}
+    if(action==='check-agent'){await api('/api/check-agent',{});await refresh(false);if($('#agent-config-status'))$('#agent-config-status').innerHTML=agentStatusBlock();updateChrome();notify(state.config.agent.canDispatch?'接单通道已有回传':'恢复连接请求已保存。请在 WorkBuddy 按连接方式接入本地文件通道。');}
+    if(action==='copy-agent'){await navigator.clipboard.writeText(state.config.agent.instruction);notify('已复制，在 Agent 中粘贴并发送即可');}
+    if(action==='open-workbuddy'){await api('/api/open-workbuddy',{});notify('已打开 Agent');}
+    if(action==='preview')setRoute('preview/'+(button.dataset.reference?'reference':button.dataset.id+'/'+button.dataset.index));
+    if(action==='add-person'){editPerson=null;personFolder='';renderPeople();$('#person-editor').scrollIntoView({block:'start',behavior:'smooth'});}
+    if(action==='edit-person'){editPerson=button.dataset.id;renderPeople();$('#person-editor').scrollIntoView({block:'start',behavior:'smooth'});}
+    if(action==='close-editor'){editPerson=undefined;renderPeople();}
+    if(action==='filter'){worksFilter=button.dataset.filter;renderWorks();}
+    if(action==='start-task')await busy(button,async()=>{await api(`/api/tasks/${button.dataset.id}/start`,{});await refresh(false);renderTask();});
+    if(action==='cancel-task')await busy(button,async()=>{await api(`/api/tasks/${button.dataset.id}/cancel`,{});await refresh(false);renderTask();notify('停止请求已提交，已有制作文件会保留');});
+    if(action==='open-folder')await busy(button,async()=>{await api('/api/open-folder',{id:button.dataset.id});notify('已打开本地作品文件夹');});
+  }catch(err){notify(err.message,true);}
+});
+$('#folder-upload').addEventListener('change',e=>importFolder(e.target.files));
+window.addEventListener('hashchange',()=>{render();window.scrollTo({top:0});});
+async function refresh(paint=true) {
+  const old=state;state=await api('/api/state');
+  if(!paint)return;
+  if(!old){render();return;}
+  updateChrome();
+  if(route==='create'){$('#recent-tasks').innerHTML=taskRows(state.tasks.slice(0,3));}
+  if(route==='settings'&&JSON.stringify(old.config.agent)!==JSON.stringify(state.config.agent)){$('#agent-config-status').innerHTML=agentStatusBlock();}
+  if(route==='works'&&JSON.stringify(old.tasks)!==JSON.stringify(state.tasks))renderWorks();
+  if(route==='task'){
+    const t=state.tasks.find(t=>t.id===selectedTask),prev=old.tasks.find(t=>t.id===selectedTask);
+    if(!t)return;
+    if(t.status!==prev?.status || JSON.stringify(t.results)!==JSON.stringify(prev?.results)){renderTask();return;}
+    if(t.updated!==prev?.updated){$('#task-current').innerHTML=taskCurrent(t);$('#task-stages').innerHTML=stages(t.phase,['running','queued'].includes(t.status));const log=$('#event-log');const bottom=log.scrollHeight-log.scrollTop-log.clientHeight<60;log.innerHTML=eventLog(t);if(bottom)log.scrollTop=log.scrollHeight;}
+  }
+}
+async function init() {
+  hydrateIcons();
+  try {
+    await refresh(false);
+    createDraft=state.draft || {};
+    if(!location.hash && !state.config.people.length && !state.config.onboarded)location.hash='onboarding';
+    render();
+    if(createDraft.source && route==='create') {try {scanResult=await api('/api/scan',{folder:createDraft.source});if($('#source-info'))$('#source-info').innerHTML=sourceInfo();}catch{}}
+  }catch(err){main.innerHTML=`<div class="loading-error"><h2>暂时没有连上本地服务</h2><p>${E(err.message)}</p><button class="secondary" data-action="reload">重新连接</button></div>`;main.querySelector('button').onclick=()=>location.reload();}
+  setInterval(async()=>{if(document.hidden)return;try{await refresh();}catch{ $('#agent-status').textContent='本地服务连接中断';$('#agent-dot').className='status-dot error';}},3500);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh().catch(()=>{});});
+}
+// The library extension starts the app after registering all screens.

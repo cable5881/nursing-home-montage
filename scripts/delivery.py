@@ -1,6 +1,6 @@
 """One publish-ready ZIP per video. Internal production records stay in the job."""
 from pathlib import Path
-import json,re,shutil,zipfile
+import json,re,shutil,zipfile,os
 from workflow import read,write,sha,settings
 from cover import title_text
 
@@ -25,6 +25,13 @@ def package(job):
     require_current(job)
     for name in ('cover.png','cover-editor.html'):
         if not (job/name).is_file():raise ValueError('发布包缺少 '+name)
+    if os.environ.get('MONTAGE_QUEUE_ITEM') or cfg.get('delivery',{}).get('mode')=='workbench':
+        from publish_assets import publish_zip,publication_text
+        archive=publish_zip(video,job/'cover.png',meta,job/'delivery/发布包.zip')
+        (job/'发布文案.txt').write_text(publication_text(meta),encoding='utf-8')
+        record={'zip':str(archive.resolve()),'folder':None,'name':meta['title'],
+                'files':3,'zipSha256':sha(archive),'videoSha256':report['sha256'],'topics':5,'mode':'workbench'}
+        write(job/'delivery.json',record);return record
     person=cfg.get('person',{});base=safe_name(person.get('name') or person.get('socialMediaName') or '')+'_'+safe_name(title_text(plan))
     folder=job/'delivery'/base;folder.mkdir(parents=True,exist_ok=True)
     targets={base+'.mp4':video,base+'_封面.png':job/'cover.png',base+'_更换封面.html':job/'cover-editor.html'}

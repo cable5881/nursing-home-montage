@@ -21,7 +21,7 @@ def prepare(source,out,selection='all',count=1,counts=None):
     if not assignments:raise ValueError('本批数量不能为0。')
     inventory(source,out);(out/'plans').mkdir()
     for i,row in enumerate(assignments):row['plan']=f'plans/{i+1:04}.json';row['job']=f'people/{row["person"]}/{row["number"]:03}';row['steps']=[];row['phase']='needs_plan'
-    data={'schema_version':1,'project':str(pc.root()),'source':str(Path(source).resolve()),'items':assignments,'excludedUnreadyPeople':missing,'phase':'needs_plans','max_active':2}
+    data={'schema_version':1,'project':str(pc.root()),'source':str(Path(source).resolve()),'items':assignments,'excludedUnreadyPeople':missing,'phase':'needs_plans','max_active':1}
     write(out/'batch.json',data);report(out)
     return {'batch':str(out),'total':len(assignments),'people':len(selected),'excludedUnreadyPeople':missing,'next':'Agent reads material inventory and authors each listed plan; start validates all before any generation.'}
 
@@ -58,41 +58,61 @@ def invoke(job,action,extra=None):
     except ValueError:payload={'error':'阶段未返回有效JSON，请查看任务日志。'}
     return result.returncode,payload
 
-def tick(folder,limit=4,retry_failed=False):
-    data=read(folder/'batch.json');processed=0
-    if data['phase']=='needs_plans':raise ValueError('先完成所有内部plan并运行start。')
-    active=sum(r['phase']=='pending' for r in data['items'])
-    for row in data['items']:
-        if processed>=limit:break
-        if row['phase'] in ('complete','provider_review','final_review'):continue
-        if row['phase']=='failed' and not retry_failed:continue
-        if row['phase']!='pending' and active>=data['max_active']:continue
-        was_pending=row['phase']=='pending';job=folder/row['job'];processed+=1
-        for step in STEPS:
-            if step in row['steps']:continue
-            if step=='cover' and (job/'runtime.json').is_file() and not read(job/'runtime.json')['settings'].get('cover',{}).get('enabled'):row['steps'].append(step);continue
-            if step=='provider-review':
-                # No avatars mode needs no provider review.
-                if not read(job/'avatars.json'):row['steps'].append(step);continue
-                row['phase']='provider_review';break
-            if step=='final-review':row['phase']='final_review';break
-            code,result=invoke(job,step);row['lastResult']=result
-            if code==2 or result.get('pending'):
-                row['phase']='pending'
-                if not was_pending:active+=1
-                break
-            if code:
-                row['phase']='failed'
-                if was_pending:active-=1;was_pending=False
-                break
-            row['steps'].append(step)
-            if step=='avatars' and was_pending:active-=1;was_pending=False
-        if row['phase']=='provider_review' and was_pending:active-=1
+def register_queue(folder):
+    data=read(folder/'batch.json')
+    sys.path.insert(0,str(Path(__file__).parent/'workbench'))
+    from server import App
+    app=App(Path(data['project']),Path(__file__).resolve().parents[1],recover=False)
+    with app.transaction():
+        if data.get('workbenchTaskId') and app.queue.for_task(data['workbenchTaskId']):
+            return app,app.task(data['workbenchTaskId'])
+        ordered={}
+        for row in data['items']:ordered[row['person']]=ordered.get(row['person'],0)+1
+        if sum(ordered.values())>100:raise ValueError('统一队列每批最多100条，请拆为多个有序批次')
+        progress=any((folder/row['job']/'voice.json').exists() or (folder/row['job']/'runs').exists() for row in data['items'])
+        task=app.task(data['workbenchTaskId']) if data.get('workbenchTaskId') else app.create({'source':data['source'],'person':data['items'][0]['person'],
+                         'people':[{'id':person,'count':count} for person,count in ordered.items()],
+                         'count':len(data['items']),'music':False,'title':folder.name})
+        data.update(workbenchTaskId=task['id'],importState='preparing',max_active=1)
         write(folder/'batch.json',data)
-    data['phase']='complete' if all(r['phase']=='complete' for r in data['items']) else 'in_progress'
-    write(folder/'batch.json',data);return report(folder)
+        task['legacyBatch']=str(folder);task['planningRequired']=not progress
+        app.update(task['id'],**{k:task[k] for k in ('legacyBatch','planningRequired')})
+        if progress:
+            # Explicitly importing an old batch preserves frozen plans and paid
+            # assets. It does not restart the legacy parallel scheduler.
+            for i,row in enumerate(data['items']):
+                source=folder/row['job'];target=Path(task['job'])/f'variant-{i+1:02d}' if len(data['items'])>1 else Path(task['job'])
+                if source.is_dir():shutil.copytree(source,target,dirs_exist_ok=True,ignore=shutil.ignore_patterns('node_modules','.hyperframes'))
+        else:
+            target,_=app.planning.initialize(task)
+            for i,row in enumerate(data['items']):
+                source=folder/row['plan']
+                if source.is_file():shutil.copy2(source,target/'plans'/f'{i+1:04d}.json')
+        app.queue.enqueue(app.task(task['id']))
+        if progress:
+            queue=app.queue.data()
+            for row in queue['items']:
+                if row['taskId']!=task['id'] or row['kind']!='video':continue
+                try:app.verify_job(Path(row['job']))
+                except (OSError,ValueError):pass
+                else:row.update(status='completed',settled=True,phase=6,message='旧批次已核验成品已保留')
+            app.queue.save(queue);app.queue.sync_task(task['id'])
+        data.update(workbenchTaskId=task['id'],max_active=1,queueVersion=2,importState='ready')
+        write(folder/'batch.json',data)
+        return app,app.task(task['id'])
+
+def tick(folder,limit=4,retry_failed=False):
+    app,task=register_queue(folder)
+    if retry_failed:
+        head=app.queue.head()
+        if head and head['taskId']==task['id'] and head['status'] in ('failed','interrupted'):
+            app.queue.action(head['id'],'retry')
+    return {'batch':str(folder),'taskId':task['id'],'queue':app.queue.public(),
+            'coordinatorGuide':str(Path(__file__).parent/'workbench/AGENT.md'),
+            'instruction':'已进入同一个严格 FIFO。当前宿主按 coordinatorGuide 由原生子 Agent 接单；本命令不启动另一套并行渲染。'}
 
 def reviewed(folder,identifier,frames,note,provider=False):
+    if read(folder/'batch.json').get('workbenchTaskId'):raise ValueError('此批次已使用统一队列，请由当前视频子 Agent 通过工作台 pipeline review 记录审核')
     data=read(folder/'batch.json');row=next(r for r in data['items'] if r['id']==identifier);job=folder/row['job']
     if row['phase']!=('provider_review' if provider else 'final_review'):raise ValueError('此条任务当前不处于对应复核阶段。')
     action='review-provider' if provider else 'review';code,result=invoke(job,action,['--frames',*frames,'--note',note])
@@ -126,7 +146,9 @@ def main():
     if args.project:os.environ['MONTAGE_PROJECT_ROOT']=str(args.project.resolve())
     if args.action=='prepare':return prepare(args.input,args.out.resolve(),args.people,args.per_person,read(args.counts) if args.counts else None)
     folder=args.folder.resolve();os.environ.setdefault('MONTAGE_PROJECT_ROOT',read(folder/'batch.json')['project'])
-    if args.action=='start':return start(folder,args.reuse_scripts)
+    if args.action=='start':
+        start(folder,args.reuse_scripts)
+        return tick(folder)
     if args.action=='run':return tick(folder,args.limit,args.retry_failed)
     if args.action=='status':return report(folder)
     return reviewed(folder,args.item,args.frames,args.note,args.action=='review-provider')

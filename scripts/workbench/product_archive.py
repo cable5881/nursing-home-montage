@@ -1,0 +1,243 @@
+"""Keep deliverables independently; remove only the selected task's owned data."""
+from pathlib import Path
+import hashlib
+import os
+import re
+import shutil
+import threading
+import time
+import uuid
+
+
+def sha(path):
+    h=hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda:stream.read(1024*1024),b''):h.update(block)
+    return h.hexdigest()
+
+
+class ProductArchive:
+    def __init__(self,app,read,write):
+        self.app,self.read,self.write=app,read,write
+        self.root=app.data/'products'
+        self.requests=app.data/'task-deletions'
+        self.lock=threading.Lock()
+        self.worker=None
+        if any(p.is_symlink() or p.resolve()!=p.absolute() for p in (self.root,self.requests)):raise ValueError('成品和清理请求目录不能是链接')
+
+    def request_path(self,ident):
+        self.app.task_path(ident)  # Validate without accessing task contents.
+        return self.requests/(ident+'.json')
+
+    def ensure_available(self,ident):
+        if self.request_path(ident).exists():raise ValueError('任务正在删除清理或等待重试，请先完成清理；成品将保留在成品库')
+
+    def pending(self):
+        return [self.read(p,{}) for p in self.requests.glob('*.json')]
+
+    def records(self):
+        return [self.read(p) for p in self.root.glob('*/manifest.json')]
+
+    def public(self):
+        result=[]
+        for item in self.records():
+            task={k:item.get(k) for k in ('id','title','institutionId','institutionName','personName','created','updated')}
+            task['results']=[]
+            versions=[]
+            for p in item['products']:
+                row={k:p[k] for k in ('index','version','label','title')}
+                row.update({kind:f"/media/archive/{item['id']}/{p['index']}/{p['version']}/{kind}" for kind in ('video','cover','package')})
+                versions.append(row)
+            for index in sorted({p['index'] for p in versions}):
+                options=[p for p in versions if p['index']==index]
+                current=item.get('currentVersions',{}).get(str(index),'original')
+                selected=next((p for p in options if p['version']==current),options[-1])
+                task['results'].append({**selected,'versions':options})
+            if task['results']:result.append(task)
+        return sorted(result,key=lambda x:x['updated'],reverse=True)
+
+    def media(self,ident,index,version,kind):
+        self.app.task_path(ident)
+        item=self.read(self.root/ident/'manifest.json',{})
+        product=next((p for p in item.get('products',[]) if p['index']==int(index) and p['version']==version),None)
+        names={'video':'final.mp4','cover':'cover.png','package':'发布包.zip'}
+        if not product or kind not in names:raise ValueError('归档成品不存在')
+        path=self.root/ident/str(product['index'])/product['version']/names[kind]
+        if path.is_symlink() or not path.resolve().is_relative_to(self.root.resolve()):raise ValueError('成品路径无效')
+        return path
+
+    def blocked(self,task):
+        if task.get('cleanupStatus') in ('queued','running'):return '正在验收清理，请等清理完成后再删除任务'
+        for row in self.app.queue.data()['items']:
+            if row['taskId']==task['id'] and (row['status'] in ('queued','assigned','running','stopping','needs_input') or not row.get('settled')):
+                return '仍在排队、制作或等待结束确认，请先结束该任务'
+        if task['status'] in ('queued','running','stopping','needs_input'):
+            return '任务尚未结束，请先结束该任务'
+        return ''
+
+    def roots(self,task):
+        ident=task['id'];self.app.task_path(ident)
+        expected=self.app.project/'作品'/('工作台_'+ident)
+        if Path(task['job'])!=expected:raise ValueError('只能清理这个任务自己创建的工程')
+        roots=[expected,self.app.edits.root/ident,self.app.task_path(ident).parent]
+        if any(not re.fullmatch(r'[a-f0-9]{12}',row['id']) for row in self.app.queue.data()['items'] if row['taskId']==ident):raise ValueError('任务队列记录无效')
+        roots += [self.app.data/name/row['id'] for row in self.app.queue.data()['items'] if row['taskId']==ident for name in ('queue-workers','pipeline-runs')]
+        baseline=self.read(self.app.project/'项目状态.json',{})
+        protected=[baseline.get('activeEditableProject'),baseline.get('latestApprovedDelivery',{}).get('path')]
+        for root in roots:
+            if root.is_symlink() or root.resolve()!=root.absolute():raise ValueError('清理目录不能是链接')
+            if any(p and (root==Path(p).resolve() or root in Path(p).resolve().parents) for p in protected):raise ValueError('已认可或活动工程不能删除')
+        return roots
+
+    def check_references(self,task,roots):
+        def threatened(value):
+            if isinstance(value,dict):return any(threatened(v) for v in value.values())
+            if isinstance(value,list):return any(threatened(v) for v in value)
+            if not isinstance(value,str) or not Path(value).is_absolute():return False
+            p=Path(value).resolve()
+            return any(p==r or r in p.parents for r in roots)
+        for other in self.app.tasks():
+            if other['id']==task['id']:continue
+            if threatened({k:other.get(k) for k in ('source','baseJob','basePlan')}):raise ValueError('其他任务仍引用这个工程，请先处理关联任务')
+            root=Path(other['job'])
+            for name in ('inventory.json','runtime.json','plan.json','asset-sources.json'):
+                if threatened(self.read(root/name,{})):raise ValueError('其他任务仍引用这个工程的资产')
+            for folder,dirs,names in os.walk(root,followlinks=False):
+                for name in dirs+names:
+                    p=Path(folder)/name
+                    if p.is_symlink() and threatened(str(p.resolve())):raise ValueError('其他任务仍链接这个工程的资产')
+                dirs[:]=[d for d in dirs if d not in ('node_modules','.hyperframes','.transcode-cache')]
+
+    def submit(self,items):
+        with self.app.transaction():
+            tasks=[self.read(self.app.task_path(item['id']),{}) or self.read(self.request_path(item['id']),{}).get('task') for item in items]
+            if any(not task for task in tasks):raise ValueError('任务不存在')
+            # Validate every selection before creating any durable deletion request.
+            for task in tasks:
+                reason=self.blocked(task)
+                if reason:raise ValueError(reason)
+                roots=self.roots(task);self.check_references(task,roots)
+            for task in tasks:
+                path=self.request_path(task['id']);old=self.read(path,{})
+                if old.get('status') in ('queued','running'):continue
+                self.write(path,{'taskId':task['id'],'title':task['title'],'task':task,'status':'queued','created':time.time(),'ownerPid':None,'ownerThread':None})
+        self.tick()
+
+    def tick(self):
+        with self.lock:
+            if self.worker and self.worker.is_alive():return
+            for request in self.pending():
+                if request.get('status') not in ('queued','running'):continue
+                with self.app.transaction():
+                    path=self.request_path(request['taskId']);current=self.read(path,{})
+                    if current.get('status') not in ('queued','running'):continue
+                    owner=current.get('ownerPid')
+                    if owner==os.getpid() and any(t.ident==current.get('ownerThread') and t.is_alive() for t in threading.enumerate()):continue
+                    if owner and owner!=os.getpid():
+                        try:os.kill(owner,0)
+                        except ProcessLookupError:pass
+                        except OSError:continue
+                        else:continue
+                    current.update(status='running',ownerPid=os.getpid(),ownerThread=threading.get_ident());self.write(path,current)
+                self.worker=threading.Thread(target=self._worker,args=(current,),daemon=True)
+                self.worker.start();return
+
+    def _worker(self,request):
+        try:
+            with self.app.transaction():
+                request.update(ownerThread=threading.get_ident());self.write(self.request_path(request['taskId']),request)
+                self.remove_task(request)
+        except Exception as exc:
+            with self.app.transaction():
+                request.update(status='failed',ownerPid=None,ownerThread=None,error=self.app.redact(str(exc))[:600]);self.write(self.request_path(request['taskId']),request)
+
+    def copy_product(self,source,target):
+        if source.is_symlink():raise ValueError('成品不能是外部链接')
+        fingerprint=sha(source)
+        if target.exists():
+            if target.is_symlink() or sha(target)!=fingerprint:raise ValueError('归档成品与原文件不一致，未清理任务')
+            return fingerprint
+        target.parent.mkdir(parents=True,exist_ok=True)
+        tmp=target.with_name('.'+target.name+'.'+uuid.uuid4().hex)
+        try:
+            try:os.link(source,tmp)
+            except OSError:shutil.copy2(source,tmp)
+            if sha(tmp)!=fingerprint:raise ValueError('成品归档校验失败')
+            os.replace(tmp,target)
+        finally:tmp.unlink(missing_ok=True)
+        return fingerprint
+
+    def preserve(self,task):
+        ident=task['id'];path=self.root/ident/'manifest.json'
+        manifest=self.read(path,{})
+        products={(p['index'],p['version']):p for p in manifest.get('products',[])}
+        root=Path(task['job'])
+        jobs=[(i,'original','原始交付',root if task['count']==1 else root/f'variant-{i+1:02d}') for i in range(task['count'])]
+        for file in (self.app.edits.root/ident).glob('*/versions/*/edition.json'):
+            edition=self.read(file,{})
+            if edition.get('status')=='completed':jobs.append((int(file.parents[2].name),file.parent.name,edition.get('label','封面修改版'),file.parent))
+        for index,version,label,job in jobs:
+            key=(index,version)
+            if not (job/'final.mp4').exists():continue
+            if not re.fullmatch(r'original|[a-f0-9]{12}',version):raise ValueError('成品版本无效')
+            if key in products:
+                if sha(job/'final.mp4')!=products[key]['sha256']['final.mp4']:raise ValueError('原成品在清理期间变化')
+                continue
+            if version=='original':self.app.verify_job(job)
+            else:
+                report=self.read(job/'verification.json',{})
+                if not report.get('fullDecode') or report.get('sha256')!=sha(job/'final.mp4'):raise ValueError('封面成品尚未核验')
+            plan=self.read(job/'plan.json',{})
+            package=self.app.edits.package(job,job/'final.mp4',job/'cover.png',plan,job/'delivery/发布包.zip')
+            publication=plan.get('publication',{})
+            text=str(publication.get('title',''))+'\n\n'+str(publication.get('description',''))+'\n\n'+' '.join('#'+str(t).lstrip('#') for t in publication.get('topics',[]))
+            target=self.root/ident/str(index)/version
+            hashes={name:self.copy_product(source,target/name) for name,source in [('final.mp4',job/'final.mp4'),('cover.png',job/'cover.png'),('发布包.zip',package)]}
+            (target/'发布文案.txt').write_text(text,encoding='utf-8')
+            products[key]={'index':index,'version':version,'label':label,'title':publication.get('title') or task['title'],'sha256':hashes}
+        for p in products.values():
+            for name,fingerprint in p['sha256'].items():
+                target=self.root/ident/str(p['index'])/p['version']/name
+                if target.is_symlink() or sha(target)!=fingerprint:raise ValueError('归档成品校验失败，未清理任务')
+        current_versions=manifest.get('currentVersions',{})
+        for index in range(task['count']):
+            current_versions[str(index)]=self.read(self.app.edits.root/ident/str(index)/'current.json',{}).get('version',current_versions.get(str(index),'original'))
+        manifest={k:task.get(k) for k in ('id','title','institutionId','institutionName','personName','created')}
+        manifest.update(updated=time.time(),products=list(products.values()),currentVersions=current_versions)
+        if products:self.write(path,manifest)
+
+    def remove_tree(self,root):
+        if not root.exists():return
+        if root.is_symlink() or root.resolve()!=root.absolute():raise ValueError('清理目录已变化')
+        for folder,dirs,names in os.walk(root,topdown=False,followlinks=False):
+            for name in names:(Path(folder)/name).unlink()
+            for name in dirs:
+                p=Path(folder)/name
+                if p.is_symlink():p.unlink()
+                else:p.rmdir()
+        root.rmdir()
+
+    def remove_task(self,request):
+        task=self.read(self.app.task_path(request['taskId']),{}) or request['task']
+        reason=self.blocked(task)
+        if reason:raise ValueError(reason)
+        roots=self.roots(task);self.check_references(task,roots)
+        self.preserve(task)  # All versions are hash checked before deleting any task file.
+        # Keep the task request until all other owned directories have been removed.
+        task_root=self.app.task_path(task['id']).parent
+        for root in roots:
+            if root!=task_root:self.remove_tree(root)
+        from shared_cache import SharedCache
+        owners=[Path(task['job'])]+[Path(task['job'])/f'variant-{i+1:02d}' for i in range(task['count'])]
+        SharedCache(self.app.project).release_owners(owners)
+        data=self.app.queue.data()
+        for row in data['items']:
+            if row['taskId']==task['id']:
+                for p in self.app.queue.inbox.glob(row['id']+'-*'):
+                    if p.is_file():p.unlink()
+        data['items']=[x for x in data['items'] if x['taskId']!=task['id']];self.app.queue.save(data)
+        self.remove_tree(task_root)
+        for preview in (self.app.data/'delete-previews').glob('*.json'):
+            value=self.read(preview,{})
+            if value.get('values',{}).get('kind')=='task' and task['id'] in value['values'].get('ids',[]):preview.unlink(missing_ok=True)
+        self.request_path(task['id']).unlink(missing_ok=True)

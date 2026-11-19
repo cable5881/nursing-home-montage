@@ -1,6 +1,7 @@
 {
-  "version": "3.0.6",
+  "version": "3.1.0",
   "config_schema": 1,
   "minimum_python": "3.11",
-  "hyperframes": "0.9.44"
+  "hyperframes": "0.9.44",
+  "status": "stable"
 }

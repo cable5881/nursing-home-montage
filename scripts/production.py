@@ -1,8 +1,28 @@
 from pathlib import Path
 from html.parser import HTMLParser
-import json,sys
+import json,sys,os
 from workflow import *
 from build_job import compose
+
+
+def cache_avatar(job,key,record):
+    from shared_cache import SharedCache
+    files={'video':record['video'],'alignment':record['alignment']}
+    files.update({'frame-'+str(i):p for i,p in enumerate(record['visualReviewFrames'])})
+    metadata={k:record[k] for k in ('taskId','driverPcmSha256','videoSha256')}
+    SharedCache(project_root()).store_files('avatar',key,files,metadata,owner=job)
+
+def restore_avatar(job,key,folder):
+    from shared_cache import SharedCache
+    shared=SharedCache(project_root());entry=shared.read('avatar',key)
+    if entry is None:return None
+    output=folder/'shared-source'
+    destinations={label:output/('source.mp4' if label=='video' else 'alignment.json' if label=='alignment' else label+'.png') for label in entry['files']}
+    metadata=shared.restore_files('avatar',key,destinations,owner=job)
+    if metadata is None:return None
+    return {**metadata,'cacheKey':key,'video':str(destinations['video']),'alignment':str(destinations['alignment']),
+            'run':str(output),'visualReviewFrames':[str(destinations[k]) for k in sorted(destinations) if k.startswith('frame-')],
+            'visualReviewPending':True,'reusedVerifiedGeneration':True}
 
 def avatars(job,wait_seconds=45):
     setup(job);cfg=settings(job);pending=[];completed=[]
@@ -18,9 +38,15 @@ def avatars(job,wait_seconds=45):
             if record['cacheKey']!=key:raise RuntimeError('Avatar driver/config changed; use a new job version')
             if Path(record['video']).exists() and sha(record['video'])==record['videoSha256']:
                 completed.append(a['id']);continue
+        if not run_dir.exists():
+            restored=restore_avatar(job,key,record_path.parent)
+            if restored:
+                write(record_path,restored);completed.append(a['id']);continue
         if cache.exists() and not run_dir.exists():
             c=read(cache)
             if Path(c['video']).exists() and sha(c['video'])==c['videoSha256']:
+                cache_avatar(job,key,c)
+                c=restore_avatar(job,key,record_path.parent)
                 write(record_path,c);completed.append(a['id']);continue
         if run_dir.exists():
             s=read(run_dir/'run.json')
@@ -39,7 +65,7 @@ def avatars(job,wait_seconds=45):
             break
         if r.returncode:raise RuntimeError(r.stdout[-2200:]+r.stderr[-1200:])
         s=read(run_dir/'run.json');v=s['verification'];record={'cacheKey':key,'video':v['output'],'videoSha256':v['sha256'],'taskId':s['task_id'],'run':str(run_dir),'alignment':v['alignment'],'driverPcmSha256':pcm_sha(audio),'visualReviewFrames':v['visual_review_frames'],'visualReviewPending':True}
-        write(record_path,record);write(cache,record);completed.append(a['id'])
+        write(record_path,record);write(cache,record);cache_avatar(job,key,record);completed.append(a['id'])
     state(job,phase='avatars_pending' if pending else 'avatars_ready',pending=pending,next='avatars' if pending else 'Inspect provider frames, then cutouts')
     return {'completed':completed,'pending':pending}
 
@@ -53,16 +79,26 @@ def cutouts(job):
         previous=read(folder/'cutout-source.json') if (folder/'cutout-source.json').exists() else {}
         if target.exists() and previous.get('cacheKey')==key and previous.get('sha256')==sha(target):
             results.append(str(target));continue
+        from shared_cache import SharedCache
+        shared=SharedCache(project_root())
+        restored=shared.restore_files('cutout',key,{'video':target},owner=job)
+        if restored is not None:
+            c={'cacheKey':key,'file':str(target),'sha256':sha(target)};write(folder/'cutout-source.json',c);results.append(str(target));continue
         if cache.exists():
             c=read(cache)
             if Path(c['file']).exists() and sha(c['file'])==c['sha256']:
-                copy_asset(c['file'],target);write(folder/'cutout-source.json',c);results.append(str(target));continue
+                copy_asset(c['file'],target);c={**c,'file':str(target)}
+                shared.store_files('cutout',key,{'video':target},owner=job);write(folder/'cutout-source.json',c);results.append(str(target));continue
         # Frame rate conversion only. Audio, speech speed and pitch are untouched.
         normalized=folder/'presenter-cfr.mkv'
         run(['ffmpeg','-y','-v','error','-i',record['video'],'-t',a['duration'],'-vf','fps=30','-an','-c:v','ffv1',normalized])
         hyperframes(job,['remove-background',normalized,'-o',folder/'avatar-matte.mov','--device','auto','--json'])
         run(['uv','run','--python','3.11',SKILL/'scripts/outline_presenter.py','--project',job,'--asset-dir',str(folder.relative_to(job)),'--min-seconds',str(max(.1,a['duration']-1/30))],cwd=job)
-        c={'cacheKey':key,'file':str(target),'sha256':sha(target)};write(folder/'cutout-source.json',c);write(cache,c);results.append(str(target))
+        c={'cacheKey':key,'file':str(target),'sha256':sha(target)};write(folder/'cutout-source.json',c);write(cache,c);shared.store_files('cutout',key,{'video':target},owner=job);results.append(str(target))
+        # Both can be recreated from the retained, verified provider video.
+        # The alpha WebM and its verification record are the actual render input.
+        normalized.unlink(missing_ok=True)
+        (folder/'avatar-matte.mov').unlink(missing_ok=True)
     compose(job);state(job,phase='composed',next='carve, check and inspect snapshots')
     return {'cutouts':results}
 
@@ -159,6 +195,8 @@ def render(job):
     require_cutouts(job);c=read(job/'check.json') if (job/'check.json').exists() else {}
     if not accepted_check(job,c):check(job)
     cfg=settings(job);out=job/'renders/final.mp4';out.parent.mkdir(exist_ok=True)
+    # A published final may share this inode. A later render must get a new file.
+    if out.is_file() and out.stat().st_nlink>1:out.unlink()
     r=hyperframes(job,['render','--quality','delivery','--crf',str(cfg['render']['crf']),'--fps','30','--workers',str(cfg['render']['workers']),'--output',out],check=False)
     (job/'render.log').write_text(r.stdout+'\n'+r.stderr, encoding='utf-8')
     if r.returncode:raise RuntimeError('Render failed; see render.log')
@@ -221,7 +259,11 @@ def review(job,frames,note,listening_note=None,motion_note=None):
     if listening_note:report.setdefault('reviewStatus',{})['listening']={'note':listening_note,'humanListeningClaimed':False}
     if motion_note:report.setdefault('reviewStatus',{})['visualLipSync']={'note':motion_note,'inferredFromAudioCorrelation':False}
     write(job/'verification.json',report)
-    final=job/'final.mp4';copy_asset(video,final)
+    final=job/'final.mp4'
+    if not final.exists():
+        try:os.link(video,final)
+        except OSError:copy_asset(video,final)
+    else:copy_asset(video,final)
     result={'video':str(final),'duration':report['duration'],'sha256':report['sha256']}
     if settings(job).get('delivery',{}).get('enabled'):
         from delivery import package

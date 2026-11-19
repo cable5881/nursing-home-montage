@@ -123,7 +123,7 @@ def resolved(job):
         if section not in out:continue
         if out[section].get(key):out[section][key]=str(asset_path(out[section][key]))
     return out
-def runtime_files(base=SKILL):
+def runtime_files(base=SKILL, include_workbench=True):
     """Only production resources belong in a resumable task engine."""
     roots=['SKILL.md','README.md','preset.json','VERSION','release.json','LICENSE','THIRD_PARTY_NOTICES.md','agents','assets','modules','scripts','references']
     result=[]
@@ -132,6 +132,7 @@ def runtime_files(base=SKILL):
         for p in ([source] if source.is_file() else source.rglob('*') if source.is_dir() else []):
             rel=p.relative_to(base)
             if not p.is_file() or any(x in ('.git','__pycache__','.DS_Store') for x in rel.parts) or p.suffix=='.pyc':continue
+            if not include_workbench and (rel.parts[:2]==('scripts','workbench') or rel.as_posix()=='scripts/workbench.py'):continue
             if rel.parts[0]=='scripts' and (p.name.startswith('test_') or p.name in ('install.py','regression.py')):continue
             result.append(p)
     return sorted(result)
@@ -167,11 +168,13 @@ def freeze(job):
         source=Path(container[key]);dest=job/'assets/fonts'/('source-'+role+source.suffix)
         if not source.is_file():raise ValueError('配置字体缺失：'+str(source))
         dest.parent.mkdir(parents=True,exist_ok=True)
-        if source.resolve()!=dest.resolve():shutil.copyfile(source,dest)
+        if source.resolve()!=dest.resolve():
+            from shared_cache import SharedCache
+            SharedCache(root()).share_immutable(source,dest,owner=job)
         container[key]=str(dest.resolve())
     plan=read(job/'plan.json') if (job/'plan.json').exists() else {}
     if plan.get('closingHookSelection'):cfg['closingHookSelection']=copy.deepcopy(plan['closingHookSelection'])
-    files=runtime_files()
+    files=runtime_files(include_workbench=False)
     manifest={str(p.relative_to(SKILL)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(files)}
     ident=hashlib.sha256(json.dumps(manifest,sort_keys=True).encode()).hexdigest()[:20]
     engine=directory()/'engines'/ident
