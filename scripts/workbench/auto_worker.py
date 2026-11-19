@@ -262,7 +262,12 @@ class Production:
             for avatar in self.read(self.job / 'avatars.json'):
                 source = self.read(self.job / 'assets' / ('avatar-' + avatar['id']) / 'generation-source.json')
                 frames.extend(source['visualReviewFrames'])
-            instructions = '审核数字人原片的嘴形、眼神、脸、手、构图、水印和是否有明显变形。'
+            instructions = (
+                '审核数字人原片抽帧的嘴部、脸、手、构图、水印和明显变形。'
+                '单帧闭眼可以是说话时的自然眨眼，单凭这一帧不可判为异常。'
+                '持续闭眼、动作是否僵硬和口型是否同步需要连续画面判断。'
+                '仅根据静态帧中实际可见的显著缺陷判定失败。'
+            )
         elif name == 'layout':
             frames = sorted((self.job / 'qc-layout').glob('*.png'))
             instructions = '查看实际封面、正文、字幕与分镜。检查文字是否裁切、遮挡、可读，画面是否与内容协调。'

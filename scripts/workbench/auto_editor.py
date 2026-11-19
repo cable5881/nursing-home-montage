@@ -270,16 +270,28 @@ class Editor:
         if not known or any(not p.is_relative_to(job) or not p.is_file() for p in known):
             raise ValueError('当前工程缺少可验证的检查帧。')
         notes = []
-        for group in chunks(known, 6):
-            names = [str(p.relative_to(job)) for p in group]
-            result = self.ask(instructions + '必须实际查看每张图，发现显著问题时拒绝。'
-                              'JSON {"ok":true,"seen":["传入的完整帧文件名"],"note":"具体可见观察"}。',
-                              {'frames': names, 'context': context},
-                              [(name, frame(p)) for name, p in zip(names, group)])
+        def inspect(visuals):
+            ids = [ident for ident, _ in visuals]
+            result = self.ask(instructions + '查看每张图，发现可见的显著问题时拒绝。'
+                              '返回 JSON 对象，ok 为布尔值，seen 为 frames 中实际看过的短编号数组，'
+                              'note 为具体可见观察。',
+                              {'frames': ids, 'context': context}, visuals)
             seen = result.get('seen')
-            if not isinstance(seen, list) or any(not isinstance(x, str) for x in seen) or set(seen) != set(names):
-                raise ValueError('模型未确认看完当前检查帧，请重试视觉复核。')
-            notes.append(approved(result))
+            if not isinstance(seen, list) or any(not isinstance(x, str) for x in seen) or set(seen) != set(ids):
+                return None
+            return approved(result)
+
+        for group in chunks(list(enumerate(known, 1)), 6):
+            visuals = [(f'F{index}', frame(path)) for index, path in group]
+            note = inspect(visuals)
+            if note is not None:
+                notes.append(note)
+                continue
+            for visual, (_, path) in zip(visuals, group):
+                note = inspect([visual])
+                if note is None:
+                    raise ValueError(f'视觉复核回传缺少帧确认：{path.relative_to(job)}。')
+                notes.append(note)
         return [str(p) for p in known], '\n'.join(notes)
 
 
