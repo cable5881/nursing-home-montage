@@ -189,7 +189,9 @@ class AgentChannel:
                         if code: raise ValueError(str(value))
                     result=self.app.planning.check(task,validate)
             elif action=='advance': result=runner.advance(row['id'],lease)
-            elif action=='review': result=runner.review(row['id'],lease,request.get('reviewKind'),request.get('note'),request.get('frames'))
+            elif action=='review':
+                result=runner.review(row['id'],lease,request.get('reviewKind'),request.get('note'),
+                                     request.get('frames'),findings=request.get('findings'))
             else:
                 code,result=runner.invoke(row,lease,action)
                 if code: raise ValueError(str(result))

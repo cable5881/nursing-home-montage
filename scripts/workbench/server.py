@@ -482,6 +482,9 @@ class App:
                     edition = read(self.edits.root / t['id'] / str(i) / 'current.json', {}).get('version', 'original')
                     result.update({kind: f"/media/video/{t['id']}/{i}/{kind}?version={edition}" for kind in ('video','cover','package')})
                     result['currentVersion'] = edition
+                    if edition == 'original':
+                        from pipeline import review_notices
+                        result['reviewNotices'] = review_notices(job, read)
                 results.append(result)
         out = {k: v for k, v in t.items() if k not in ("session",)}
         out["results"] = results

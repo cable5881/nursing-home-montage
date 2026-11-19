@@ -29,6 +29,7 @@ def main():
     execute.add_argument('--action',dest='stage_action',choices=('prepare-planning','planning-check','prepare-video','advance','review','snapshot','check'),required=True)
     execute.add_argument('--review-kind',choices=('content','provider','layout','final','contrast'))
     execute.add_argument('--note-file',type=Path);execute.add_argument('--frames',nargs='*',default=[])
+    execute.add_argument('--finding', action='append', dest='findings')
     wait = sub.add_parser("wait")
     wait.add_argument("--seconds", type=int, default=600)
     sub.add_parser("disconnect")
@@ -47,7 +48,8 @@ def main():
         # Explicit no-HTTP mode uses the same typed executor synchronously. Keep
         # this process alive until its own worker exits; never orphan a thread.
         request={'id':args.id,'lease':args.lease,'action':args.stage_action,'reviewKind':args.review_kind,
-                 'note':args.note_file.read_text() if args.note_file else None,'frames':args.frames}
+                 'note':args.note_file.read_text() if args.note_file else None,'frames':args.frames,
+                 'findings':args.findings}
         result=app.channel.start(request)
         app.channel.active[args.id].join()
         value=app.channel.handle({'op':'run-status','id':args.id,'lease':args.lease,'runId':result['runId']})

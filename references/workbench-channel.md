@@ -52,7 +52,7 @@
 - 策划准备：action=prepare-planning，之后读取共享 inventory.json / source-text.txt。
 - 策划校验：action=planning-check，校验整批草稿并生成 approved.json。
 - 视频推进：action=advance。返回 needs_review 时，根据 gate 实际查看内容或画面，再请求审核。
-- 审核：action=review，reviewKind=content/provider/layout/final/contrast，note 是具体观察，frames 是实际看过的当前工程文件路径。content 不需要 frames；其他审核必须提供对应真实帧。审核后再 advance。contrast 只用于原有规范允许的对比度复核，不能绕过其他错误。
+- 审核使用 action=review，reviewKind=content/provider/layout/final/contrast，note 是具体观察，frames 是实际看过的当前工程文件路径。content 不需要 frames。provider/layout/final 的画面意见写入 findings 文字数组，经技术核验后继续 advance 并打包。若本轮复核无法完整查看，提交空 frames、findings（可为空）和说明原因的 note。对比度单项提示由工作台保留测量和画面证据并继续。
 - 定位排版错误：可单独 action=snapshot 或 check。修改计划时先报告问题或另存重做，不让执行器悄悄跳过失败步骤。
 
 advance 返回 completed 已完成核验及队列 report；立即结束子 Agent，不重复 report completed。返回 pending/checkpoint 时再次 advance 会查询已有任务，不重提付费生成。返回 failed 时查看日志、修正可修复问题；权限拒绝或不可恢复问题报告 failed 并退出。

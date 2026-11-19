@@ -214,7 +214,8 @@ class Acceptance:
     def _keep_product(self, ident, index, job, version, keep, products):
         if job.is_symlink() or not (job / 'final.mp4').is_file() or (job / 'final.mp4').is_symlink():
             raise ValueError('成品不能是外部链接，未进行清理')
-        for name in ('final.mp4', 'cover.png', 'plan.json', 'state.json', 'verification.json', 'narration.txt', 'cover-input.json'):
+        for name in ('final.mp4', 'cover.png', 'plan.json', 'state.json', 'verification.json',
+                     'review-notices.json', 'narration.txt', 'cover-input.json'):
             p = job / name
             if p.is_symlink():
                 raise ValueError('保留文件不能引用将被清理的外部资产')

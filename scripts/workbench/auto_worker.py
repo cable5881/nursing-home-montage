@@ -1,7 +1,6 @@
 """Independent FIFO coordinator for the existing production pipeline."""
 import os
 from pathlib import Path
-import re
 import threading
 import uuid
 
@@ -128,8 +127,6 @@ class Production:
             if state == 'needs_review':
                 self.review(result['gate'], answer)
             elif state == 'failed':
-                if result['step'] == 'check' and self.review_contrast(answer):
-                    continue
                 detail = result.get('result', {})
                 raise ValueError(f"{result['step']} 阶段暂停：" + str(detail.get('error') or detail))
             elif state not in ('checkpoint', 'pending'):
@@ -274,30 +271,11 @@ class Production:
         else:
             frames = self.read(self.job / 'verification.json')['renderedReviewFrames']
             instructions = '核查所有实际成片帧，包括封面首帧、正文次帧、切镜与字幕差异。发现黑屏、错人、裁切或遮挡应拒绝。'
-        evidence, note = self.editor.review_frames(self.job, frames, instructions, answer)
-        self.pipe.review(self.item, self.lease, name, note, evidence)
-
-    def review_contrast(self, answer):
-        check = self.read(self.job / 'check.json', {})
-        if check.get('browserSkipped') or any(value.get('errorCount') for name, value in check.items()
-                                              if name not in ('contrast', 'visualContrastReview') and isinstance(value, dict)):
-            return False
-        findings = [x for x in check.get('contrast', {}).get('findings', []) if x.get('severity') == 'error']
-        if not findings or any(x.get('code') != 'contrast_aa_failure' or not isinstance(x.get('time'), (float, int)) for x in findings):
-            return False
-        self.progress('正在按原样式复核有对比度提示的检查帧')
-        times = sorted({round(x['time'], 3) for x in findings})
-        self.invoke('snapshot', extra=['--at', ','.join(map(str, times))])
-        all_frames = sorted((self.job / 'qc-layout').glob('*.png'))
-        frames = []
-        for p in all_frames:
-            sample = re.search(r'-at-([0-9.]+)s', p.name)
-            if sample and any(abs(float(sample[1])-t)<.004 for t in times):
-                frames.append(p)
-        if not frames:
-            raise ValueError('未截取到对比度提示对应的实际检查帧。')
-        evidence, note = self.editor.review_frames(
-            self.job, frames, '按原样式判断提示位置的描边和文字是否实际清晰可读。'
-            '真实难以辨认时必须拒绝，保留自动对比度失败。', {'findings': findings, 'answer': answer})
-        result = self.pipe.review(self.item, self.lease, 'contrast', note, evidence)
-        return result.get('renderAcceptedWithVisualContrastReview') is True
+        findings = []
+        try:
+            evidence, note = self.editor.review_frames(self.job, frames, instructions, answer, findings=findings)
+        except (OSError, ValueError) as exc:
+            self.pipe.visual_advice(self.item, self.lease, name, findings,
+                                    unavailable=self.app.redact(str(exc))[:600])
+        else:
+            self.pipe.review(self.item, self.lease, name, note, evidence, findings=findings)

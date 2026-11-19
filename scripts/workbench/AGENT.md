@@ -36,6 +36,8 @@ poll 返回 video：创建全新视频子 Agent，仅传本条 PROMPT.md。已�
 
 子 Agent 通过 run 请求 prepare-planning / planning-check 或 prepare-video / advance。执行器提供事实进度和检查点；不能替 Agent 做内容与画面判断。内容、原片、排版、实际成片均须按 skill 检查；审核记录必须对应实际文件。
 
+数字人原片、排版和成片的画面问题通过 review 的 findings 记录，然后继续 advance。每条发现写明位置或时刻，技术核验通过后交付，画面提醒从预览查看。只在确有制作条件缺失或需要用户决定时使用 needs_input。
+
 旧 bridge.py wait/accept/report/settle 命令及 v1 结束回执继续兼容，但不要和原生文件通道同时开两个协调者。旧 batch.py run 已接入相同队列，不再启动第二套并行制作。
 
 ## 完成

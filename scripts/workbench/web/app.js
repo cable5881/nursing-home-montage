@@ -450,6 +450,12 @@ function renderOnboarding() {
   const steps = [{done:hasServices(),name:'配置服务连接',text:'准备火山语音 API Key 和视频 AK / SK，填一次就好。',link:'settings',button:'配置服务'},{done:hasPerson(),name:'添加你的数字人',text:'准备人物照片，填好社媒署名，绑定已有音色或提供声音样本。',link:'people',button:'配置数字人'},{done:state.config.agent.state === 'connected',name:'连接 '+state.config.agent.label,text:'打开并登录 Agent，检查连接，让 Agent 能接手制作。',link:'settings',button:'检查连接'},{done:state.tasks.length > 0,name:'选好素材，制作第一条视频',text:'先在机构资料库添加实拍与介绍，再选择人物、数量和本批偏好。',link:'create',button:'开始制作'}];
   main.innerHTML = `<div class="onboarding-intro"><h1>欢迎，先把工作台准备好。</h1><p>不用看代码，也不用编辑配置文件。跟着下面四步，准备好服务、数字人和素材，就能把第一条视频交给 Agent。</p></div><div class="onboarding-list">${steps.map((s,i)=>`<div class="onboard-step"><span class="step-number">${s.done ? icon('check') : i+1}</span><div class="step-content"><h2>${s.name} ${s.done ? badge('已准备') : ''}</h2><p>${s.text}</p></div><a href="#${s.link}" class="secondary">${s.button} ${icon('arrow-right')}</a></div>`).join('')}</div><div class="onboarding-bottom"><a href="#create" class="primary">进入制作工作台 ${icon('arrow-right')}</a><p>可以先看看界面，准备过程中随时回来继续。</p></div>`;
 }
+function previewReviewNotices(result) {
+  const notices = result?.reviewNotices || [];
+  if (!notices.length) return '';
+  const names = {provider:'数字人原片', layout:'排版', contrast:'对比度', final:'成片'};
+  return `<details class="panel preview-review-notices"><summary>画面复核提醒（${notices.length}）</summary><ul>${notices.map(({stage,text})=>`<li><strong>${E(names[stage] || '画面')}</strong> ${E(text)}</li>`).join('')}</ul></details>`;
+}
 function renderPreview() {
   const hash = location.hash.slice(1).split('/');
   const task = state.tasks.find(t=>t.id===hash[1]);
@@ -458,6 +464,7 @@ function renderPreview() {
   const video = reference ? state.reference.video : result?.video;
   if (!video) {main.innerHTML = '<div class="work-empty"><h2>视频还没有完成</h2><a href="#works" class="secondary">返回我的作品</a></div>';return;}
   main.innerHTML = `<a class="back-link" href="${reference ? '#create' : '#task/'+E(task.id)}">${icon('arrow-right')} 返回${reference ? '制作工作台' : '制作详情'}</a>${heading(reference ? '已认可的项目样片' : E(result.title),reference ? '真实已交付作品 · 仅作效果参考' : '本次制作完成的成片',result?.package ? `<a class="primary" href="${E(result.package)}" download>${icon('download')} 下载发布包</a>` : '')}<div class="video-view"><video controls playsinline preload="metadata" poster="${E(reference ? state.reference.cover : result.cover)}" src="${E(video)}"></video></div>`;
+  main.querySelector('.video-view').insertAdjacentHTML('beforebegin', previewReviewNotices(result));
 }
 function render() {
   if(!state)return;

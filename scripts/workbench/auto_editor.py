@@ -264,21 +264,34 @@ class Editor:
             {**context, 'plan': plan, 'audit': audit})
         return approved(response)
 
-    def review_frames(self, job, paths, instructions, context=None):
+    def review_frames(self, job, paths, instructions, context=None, *, findings=None):
         job = job.resolve()
         known = sorted(set(Path(p).resolve() for p in paths))
         if not known or any(not p.is_relative_to(job) or not p.is_file() for p in known):
             raise ValueError('当前工程缺少可验证的检查帧。')
         notes = []
+        times = {}
+        for index, path in enumerate(known, 1):
+            match = re.search(r'-([0-9.]+)s$', path.stem)
+            if match:
+                times[f'F{index}'] = float(match[1])
+
         def inspect(visuals):
             ids = [ident for ident, _ in visuals]
             result = self.ask(instructions + '查看每张图，发现可见的显著问题时拒绝。'
                               '返回 JSON 对象，ok 为布尔值，seen 为 frames 中实际看过的短编号数组，'
-                              'note 为具体可见观察。',
-                              {'frames': ids, 'context': context}, visuals)
+                              'note 为具体可见观察，若提供了秒数请写清对应时间。',
+                              {'frames': ids, 'seconds': {ident: times[ident] for ident in ids if ident in times},
+                               'context': context}, visuals)
             seen = result.get('seen')
             if not isinstance(seen, list) or any(not isinstance(x, str) for x in seen) or set(seen) != set(ids):
                 return None
+            if findings is not None and result.get('ok') is False:
+                note = result.get('note')
+                if isinstance(note, str) and note.strip():
+                    note = note.strip()[:600]
+                    findings.append(note)
+                    return note
             return approved(result)
 
         for group in chunks(list(enumerate(known, 1)), 6):

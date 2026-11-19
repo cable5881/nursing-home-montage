@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -26,6 +27,12 @@ REVIEW_ACTIONS = {'content':'review-content', 'provider':'review-provider',
 
 def fingerprint(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def review_notices(job, read):
+    records = read(job / 'review-notices.json', {})
+    return [dict(stage=stage, text=text) for stage, record in records.items()
+            for text in record.get('findings', [])]
 
 
 class Pipeline:
@@ -105,14 +112,16 @@ class Pipeline:
             expected=hashlib.sha256(json.dumps(value,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
             return review.get('inputFingerprint')==expected
         if step == 'provider-review':
-            for avatar in self.read(job/'avatars.json',[]):
-                data=self.read(job/'assets'/('avatar-'+avatar['id'])/'generation-source.json',{})
-                if data.get('visualReviewPending',True): return False
-                if fingerprint(data['video'])!=data.get('videoSha256'): return False
-            return True
+            fallback = self.read(job / 'review-notices.json', {}).get('provider', {}).get('incomplete')
+            sources = self.verified_providers(job)
+            return (not any(data.get('visualReviewPending', True) for data in sources)
+                    or fallback == [data['videoSha256'] for data in sources])
         if step == 'layout-review':
             review=self.read(job/'layout-review.json',{})
-            if review.get('composition')!=fingerprint(job/'index.html'): return False
+            composition = fingerprint(job/'index.html')
+            fallback = self.read(job / 'review-notices.json', {}).get('layout', {}).get('incomplete')
+            if fallback == composition: return True
+            if review.get('composition')!=composition: return False
             return bool(review.get('frames')) and all(Path(f['file']).is_file() and fingerprint(f['file'])==f['sha256'] for f in review['frames'])
         if step == 'final-review':
             verify=self.read(job/'verification.json',{})
@@ -153,7 +162,16 @@ class Pipeline:
                 if code==2 or result.get('pending'):
                     self.write(journal_path,{**journal,'plan':fingerprint(job/'plan.json'),'waiting':step})
                     return {'state':'pending','step':step,'result':result}
-                if code: return {'state':'failed','step':step,'result':result,'job':str(job)}
+                if code and not (step=='check' and self.accept_contrast_notice(row, lease, job)):
+                    return {'state':'failed','step':step,'result':result,'job':str(job)}
+                if step == 'package':
+                    verified, _ = self.verified_render(job)
+                    final = job / 'final.mp4'
+                    if not final.is_file() or fingerprint(final) != verified['sha256']:
+                        raise ValueError('交付视频与技术核验记录不一致。')
+                    self.write(job / 'state.json', {**self.read(job / 'state.json', {}),
+                               'phase': 'complete', 'video': str(final), 'sha256': verified['sha256'],
+                               'next': 'Deliver the publish-ready ZIP'})
             journal['steps'].append(step);journal['plan']=fingerprint(job/'plan.json');journal.pop('waiting',None)
             self.write(journal_path,journal)
             if time.monotonic()>=deadline: return {'state':'checkpoint','step':step,'job':str(job)}
@@ -161,10 +179,104 @@ class Pipeline:
         self.app.queue.report(ident,lease,5,'completed','视频已核验并打包，等待用户验收')
         return {'state':'completed','job':str(job)}
 
-    def review(self, ident, lease, kind, note, frames=None):
+    def save_notices(self, job, kind, findings, *, incomplete=None):
+        if not isinstance(findings, list) or any(not isinstance(text, str) for text in findings):
+            raise ValueError('画面提醒须为文字数组。')
+        path = job / 'review-notices.json'
+        records = self.read(path, {})
+        records[kind] = {'findings': list(dict.fromkeys(self.app.redact(text).strip()[:900]
+                                                       for text in findings if text.strip()))[:80]}
+        if incomplete is not None:
+            records[kind]['incomplete'] = incomplete
+        self.write(path, records)
+
+    def verified_render(self, job):
+        report = self.read(job / 'verification.json', {})
+        video = Path(report.get('video', '')).resolve()
+        if (report.get('fullDecode') is not True or not video.is_relative_to(job.resolve())
+                or not video.is_file() or fingerprint(video) != report.get('sha256')):
+            raise ValueError('实际成片未通过完整性核验。')
+        return report, video
+
+    def verified_providers(self, job):
+        sources = []
+        for avatar in self.read(job / 'avatars.json', []):
+            data = self.read(job / 'assets' / ('avatar-' + avatar['id']) / 'generation-source.json', {})
+            video = Path(data.get('video', ''))
+            if not video.is_file() or fingerprint(video) != data.get('videoSha256'):
+                raise ValueError('数字人原片未通过完整性校验。')
+            sources.append(data)
+        return sources
+
+    def finalize_without_full_visual_review(self, job, findings, unavailable):
+        report, video = self.verified_render(job)
+        final = job / 'final.mp4'
+        if final.is_symlink() or (final.exists() and fingerprint(final) != report['sha256']):
+            raise ValueError('已有交付视频与技术核验记录不一致。')
+        if not final.exists():
+            temporary = job / '.final.mp4.tmp'
+            temporary.unlink(missing_ok=True)
+            try:
+                try: os.link(video, temporary)
+                except OSError: shutil.copy2(video, temporary)
+                temporary.replace(final)
+            finally:
+                temporary.unlink(missing_ok=True)
+        self.save_notices(job, 'final', findings + ([f'成片画面复核未完整结束。{unavailable}'] if unavailable else []))
+        self.write(job / 'verification.json', {**report, 'visualReviewPending': False,
+                   'visualReview': {'status': 'incomplete', 'videoSha256': report['sha256']}})
+
+    def visual_advice(self, ident, lease, kind, findings, *, unavailable):
+        row = self.row(ident, lease)
+        job = Path(row['job'])
+        if kind == 'final':
+            self.finalize_without_full_visual_review(job, findings, unavailable)
+            return
+        if kind == 'provider':
+            binding = [data['videoSha256'] for data in self.verified_providers(job)]
+        elif kind == 'layout':
+            binding = fingerprint(job / 'index.html')
+        else:
+            raise ValueError('未知画面复核阶段。')
+        self.save_notices(job, kind, findings + [f'画面复核未完整结束。{unavailable}'], incomplete=binding)
+
+    def accept_contrast_notice(self, row, lease, job):
+        check = self.read(job / 'check.json', {})
+        if check.get('browserSkipped') is not False or any(
+                value.get('errorCount') for name, value in check.items()
+                if name not in ('contrast', 'visualContrastReview') and isinstance(value, dict)):
+            return False
+        errors = [f for f in check.get('contrast', {}).get('findings', []) if f.get('severity') == 'error']
+        if not errors or any(f.get('code') != 'contrast_aa_failure' or not isinstance(f.get('time'), (int, float))
+                             for f in errors):
+            return False
+        times = sorted({round(f['time'], 3) for f in errors})
+        code, _ = self.invoke(row, lease, 'snapshot', extra=['--at', ','.join(map(str, times))])
+        if code: return False
+        frames = []
+        for path in sorted((job / 'qc-layout').glob('*.png')):
+            sample = re.search(r'-at-([0-9.]+)s', path.name)
+            if sample and any(abs(float(sample[1])-t)<.004 for t in times):
+                frames.append(path)
+        if not frames: return False
+        evidence = job / 'qc-layout' / 'contrast-evidence'
+        evidence.mkdir(exist_ok=True)
+        kept = [str(shutil.copy2(path, evidence / path.name)) for path in frames]
+        note = '浏览器仅报告对比度提示，测量和对应画面已保留，随成片预览展示。'
+        code, result = self.invoke(row, lease, 'review-contrast', extra=['--note',note,'--frames',*kept])
+        if code or result.get('renderAcceptedWithVisualContrastReview') is not True: return False
+        self.save_notices(job, 'contrast', [f'{f["time"]:.3f} 秒 · {f.get("text") or "画面文字"}：'
+                           f'浏览器测得的对比度低于阈值{("（" + str(f["ratio"]) + ":1）") if f.get("ratio") else ""}。'
+                           for f in errors])
+        return True
+
+    def review(self, ident, lease, kind, note, frames=None, *, findings=None):
         row=self.row(ident,lease);job=Path(row['job'])
         if not isinstance(note,str) or not note.strip(): raise ValueError('请记录实际查看后的具体观察')
         if not isinstance(frames or [],list): raise ValueError('检查帧格式错误')
+        if kind in ('provider','layout','final') and not frames and findings is not None:
+            self.visual_advice(ident, lease, kind, findings, unavailable=note)
+            return {'recorded': True, 'visualReviewIncomplete': True}
         for path in frames or []:
             if not Path(path).resolve().is_relative_to(job.resolve()) or not Path(path).is_file():
                 raise ValueError('仅接受当前工程的实际检查帧')
@@ -173,8 +285,13 @@ class Pipeline:
                 raise ValueError('请提供当前工程 qc-layout 的实际排版检查帧')
             self.write(job/'layout-review.json',{'composition':fingerprint(job/'index.html'),
                        'frames':[{'file':str(Path(p).resolve()),'sha256':fingerprint(p)} for p in frames],'note':note})
+            if findings is not None: self.save_notices(job, kind, findings)
             return {'recorded':True}
         if kind not in REVIEW_ACTIONS: raise ValueError('未知审核类型')
+        if kind == 'final':
+            self.verified_render(job)
+        if kind in ('provider','final') and findings is not None:
+            self.save_notices(job, kind, findings)
         extra=['--note',note]
         if kind!='content':extra+=['--frames',*(frames or [])]
         code,result=self.invoke(row,lease,REVIEW_ACTIONS[kind],extra)
