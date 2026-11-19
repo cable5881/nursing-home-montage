@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11,<3.13"
-# dependencies = ["faster-whisper==1.2.1", "pypinyin==0.55.0", "opencc-python-reimplemented==0.1.7", "fonttools>=4.50,<5", "brotli>=1,<2", "numpy>=1.26,<3"]
+# dependencies = ["faster-whisper==1.2.1", "pypinyin==0.55.0", "opencc-python-reimplemented==0.1.7", "fonttools>=4.50,<5", "brotli>=1,<2", "numpy>=1.26,<3", "jieba==0.42.1"]
 # ///
 """Institution materials -> one fullscreen montage -> verified publish package."""
 import argparse,json,sys

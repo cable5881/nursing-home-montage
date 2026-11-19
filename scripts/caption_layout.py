@@ -1,5 +1,6 @@
 """Locked-size glyph measurement and lossless caption reflow for full-frame templates."""
 import copy, math, re
+from functools import lru_cache
 from pathlib import Path
 from fontTools.ttLib import TTFont
 from fontTools.pens.boundsPen import BoundsPen
@@ -36,14 +37,73 @@ class Typography:
         return r[2]-r[0]<=self.spec['max_width']+1e-6
 
 
-def boundaries(text,focus):
+def boundaries(text,focus,protected=()):
     blocked=set()
-    spans=[m.span() for m in re.finditer(r'[0-9零〇一二两三四五六七八九十百千万亿点]+(?:平方米|养老床位|张床位|小时|分钟|号线|平方|公里|床位|秒|天|年|月|家|岁|万|元|米|㎡|%|％)?',text)]
+    spans=[m.span() for m in re.finditer(r'[0-9零〇一二两三四五六七八九十百千万亿点]+(?:\.[0-9]+)?(?:平方米|养老床位|张床位|小时|分钟|号线|平方|公里|床位|秒|天|年|月|家|岁|万|元|米|㎡|%|％)?',text)]
+    for term in protected:
+        spans.extend(m.span() for m in re.finditer(re.escape(term),text))
     if focus:
         start=text.find(focus)
         if start>=0:spans.append((start,start+len(focus)))
     for start,end in spans:blocked.update(range(start+1,end))
     return [i for i in range(1,len(text)+1) if i not in blocked]
+
+
+def auto_caption_lines(text, typography, protected, clean, characters, offset):
+    """Fit readable caption groups while keeping their spoken time boundaries."""
+    from jieba import tokenize
+    from alignment import safe_boundary
+
+    @lru_cache(maxsize=None)
+    def fits(start, end, row):
+        return typography.fits(text[start:end].strip(),row=row)
+
+    parentheses=re.findall(r'（[^（）]+）|\([^()]+\)',text)
+    intact=[term for term in (*protected,*parentheses) if term in text and typography.fits(term)]
+    protected_edges=set(boundaries(text,'',intact))
+    cuts=[0,*boundaries(text,'')]
+    cuts=[i for i in cuts if i in (0,len(text)) or (text[i] not in '）)、' and text[i-1] not in '（(')]
+    word_edges={i for _,start,end in tokenize(text) for i in (start,end)}
+    word_edges.update(i for term in intact for m in re.finditer(re.escape(term),text) for i in m.span())
+    aligned={i:offset+len(clean(text[:i])) for i in cuts}
+    trailing_particles='的把和与在及跟向从也'
+    leading_particles='的了着过呢吗啊'
+
+    def line_ends(start, row):
+        for end in cuts:
+            if end<=start or aligned[end]==aligned[start]:continue
+            if not fits(start,end,row):break
+            yield end
+
+    def room_to_read(start, end):
+        a,b=aligned[start],aligned[end]
+        if not safe_boundary(characters,b):return False
+        stop=characters[b-1]['end']+.2
+        if b<len(characters):stop=min(stop,characters[b]['start']-.025)
+        return stop-characters[a]['start']>.2
+
+    # Work backwards. Prefer whole words, avoid leaving connecting words hanging,
+    # then minimize screens and use the available width before adding a second row.
+    best={len(text):((0,0,0,0,0,0),[])}
+    for start in reversed(cuts[:-1]):
+        options=[]
+        for split in line_ends(start,0):
+            for end in (split,*line_ends(split,1)):
+                if end not in best or not room_to_read(start,end):continue
+                next_cost,after=best[end]
+                breaks=(end,) if end==split else (split,end)
+                lengths=[aligned[b]-aligned[a] for a,b in zip((start,*breaks),breaks)]
+                cost=(sum(i not in protected_edges for i in breaks),
+                      sum(i not in word_edges for i in breaks),
+                      sum(i<len(text) and (text[i-1] in trailing_particles or text[i] in leading_particles) for i in breaks),
+                      sum(n==1 for n in lengths)+int(end==split and lengths[0]==2),
+                      1,len(breaks))
+                lines=[text[a:b].strip() for a,b in zip((start,*breaks),breaks)]
+                options.append((tuple(a+b for a,b in zip(cost,next_cost)),[lines,*after]))
+        if options:best[start]=min(options,key=lambda item:item[0])
+    if 0 not in best:
+        raise ValueError('字幕无法在安全宽度和口播时间内排完，请按完整词组调整字幕计划。')
+    return best[0][1]
 
 
 def wrap(text,focus,typography):

@@ -2,6 +2,9 @@ from pathlib import Path
 import hashlib,json,math,re
 from workflow import *
 from alignment import character_map,safe_boundary
+from caption_layout import Typography,auto_caption_lines
+
+CARE_TERMS=('老年公寓','书画室','阅读室','医务室','生活照护','失智照护','康复护理','健康监测','就医通道','忆路同行')
 
 def find_font(cfg):
     override=cfg['typography'].get('body_font')
@@ -9,14 +12,24 @@ def find_font(cfg):
         if not Path(override).is_file():raise ValueError('Configured body font missing')
         return Path(override)
     return SKILL/'assets/LXGWWenKai-Regular.ttf'
-def caption_parts(s):
+def caption_parts(s, typography, protected, characters, cursor):
     if s.get('captions'):return s['captions']
-    parts=[p for p in re.split('[，,、；;：:。！？!?]',s['text']) if clean(p)]
     result=[]
-    for part in parts:
-        # Draft only; the skill reviews line breaks semantically and keeps the locked size.
-        chunks=[part[i:i+8] for i in range(0,len(part),8)]
-        result.extend({'text':c,'lines':[c] if len(c)<=7 else [c[:4],c[4:]],'focus':''} for c in chunks)
+    parts=re.split(r'(（[^（）]*）|\([^()]*\))',s['text'])
+    clauses=['']
+    for i,part in enumerate(parts):
+        if i%2:
+            clauses[-1]+=part
+        else:
+            first,*rest=re.split(r'[，,；;：:。！？!?]',part)
+            clauses[-1]+=first
+            clauses.extend(rest)
+    for clause in clauses:
+        clause=clause.strip();count=len(clean(clause))
+        if not count:continue
+        for lines in auto_caption_lines(clause,typography,protected,clean,characters,cursor):
+            result.append({'text':''.join(lines),'lines':lines,'focus':''})
+        cursor+=count
     return result
 def build(job):
     plan,files=validate_plan(job);setup(job);cfg=settings(job)
@@ -38,9 +51,15 @@ def build(job):
     levels=run(['ffmpeg','-hide_banner','-i',raw,'-af','aformat=channel_layouts=stereo,loudnorm=I=-17:TP=-1.5:LRA=11:print_format=json','-f','null','-']).stderr
     levels=json.loads(levels[levels.rfind('{'):levels.rfind('}')+1]);gain=cfg['voice']['target_lufs']-float(levels['input_i'])
     run(['ffmpeg','-y','-v','error','-i',raw,'-af',f'volume={gain:.4f}dB','-ar','48000','-ac','2','-c:a','pcm_s16le',voice_dir/'narration-master.wav'])
+    import project_config as pc
+    font=find_font(cfg)
+    cap=pc.merge(read(SKILL/'assets/templates/fullscreen-orange.json'),cfg['template'].get('overrides',{}))['caption']
+    typography=Typography(font,cfg['typography']['collection_index'],cap)
+    inst=plan['institution']
+    protected={*CARE_TERMS,*(part for field in ('displayName','name') for part in re.split(r'[·•（）()\s]+',inst[field]) if part)}
     cues=[];cursor=0
     for s in plan['sentences']:
-        for c in caption_parts(s):
+        for c in caption_parts(s,typography,protected,chars,cursor):
             n=len(clean(c['text']))
             if clean(c['text'])!=canonical[cursor:cursor+n]:raise ValueError('Caption draft dropped/changed words; edit the plan')
             if not safe_boundary(chars,cursor) or not safe_boundary(chars,cursor+n):raise ValueError('字幕不能从数字内部切开；合并该数字所在字幕后重新 build，复用原配音。')
@@ -51,6 +70,7 @@ def build(job):
         c['duration']=round(c['end']-c['start'],6)
         if c['duration']<=.2:raise ValueError('Caption has too little reading time; merge its wording with a neighbour')
     write(job/'captions.json',cues)
+    write(job/'caption-source.json',cues)
     write(job/'caption-characters.json',{'sourceAudioSha256':v['sha256'],'characters':[{**c,'start':c['start']+offset,'end':c['end']+offset} for c in chars]})
     def stamp(t):
         ms=round(t*1000);h,ms=divmod(ms,3600000);m,ms=divmod(ms,60000);s,ms=divmod(ms,1000);return f'{h:02}:{m:02}:{s:02},{ms:03}'
@@ -77,7 +97,7 @@ def build(job):
     (job/'source-description.txt').write_text(json.dumps(plan['institution'],ensure_ascii=False)+'\n'+(job/'source-text.txt').read_text(encoding='utf-8'), encoding='utf-8')
     inst=plan['institution'];reference=cfg['typography'].get('reference_identity')==inst and bool(cfg['typography'].get('reference_asset'))
     write(job/'institution.json',{**inst,'headerMode':'reference' if reference else 'dynamic'})
-    font=find_font(cfg);match=[{'family':'Project body font' if cfg['typography'].get('body_font') else 'LXGW WenKai','file':str(font),'index':cfg['typography']['collection_index'],'stroke':1,'angle':0,'tracking':4}]
+    match=[{'family':'Project body font' if cfg['typography'].get('body_font') else 'LXGW WenKai','file':str(font),'index':cfg['typography']['collection_index'],'stroke':1,'angle':0,'tracking':4}]
     write(job/'orange-font-match.json',match)
     # Fresh subsets must include the new institution and narration, not the previous project's glyph set.
     for f in ('OrangeRounded.woff2','OrangeLabel.woff2'):(job/'assets/fonts'/f).unlink(missing_ok=True)
