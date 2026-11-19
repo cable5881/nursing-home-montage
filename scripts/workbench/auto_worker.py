@@ -5,7 +5,7 @@ import re
 import threading
 import uuid
 
-from auto_editor import Editor, NeedsInput, PlanError, approved
+from auto_editor import Editor, NeedsInput, PlanError, approved, source_evidence
 from pipeline import Pipeline, fingerprint
 from planning import digest
 
@@ -145,10 +145,11 @@ class Production:
         context = self.editor.context(task, folder, answer)
         cache_path = folder / 'independent-planning.json'
         # Rebuild unfinished outlines written before the batch stopped treating source details as core facts.
-        identity = digest({'input': input_fingerprint, 'answer': answer, 'editorialVersion': 2})
+        evidence = source_evidence(context['sources'])
+        identity = digest({'input': input_fingerprint, 'answer': answer, 'editorialVersion': 3})
         cache = self.read(cache_path, {})
         if cache.get('input') != identity:
-            cache = {'input': identity, 'facts': self.editor.batch_outline(context), 'plans': []}
+            cache = {'input': identity, 'facts': self.editor.batch_outline(context, evidence), 'plans': []}
             self.write(cache_path, cache)
         facts = cache['facts']
         items = []
@@ -162,16 +163,20 @@ class Production:
                     continue
                 cache['plans'] = cache['plans'][:index]
             self.progress(f'整批策划：正在编排第 {index + 1}/{task["count"]} 条')
-            feedback = ''
-            for attempt in range(3):
+            feedback, candidate = '', None
+            for attempt in range(4):
                 try:
-                    plan, angles = self.editor.plan(task, index, context, facts, items[-12:], feedback)
-                    self.app.planning.validate_item(task, folder, index, plan,
-                                                    lambda job: self.invoke('validate-plan', job=job))
+                    plan, angles = self.editor.plan(task, index, context, facts, items[-12:],
+                                                   feedback, evidence=evidence, candidate=candidate)
+                    candidate = {**angles, 'plan': {k: v for k, v in plan.items() if k != 'facts'}}
+                    plan = self.app.planning.validate_item(task, folder, index, plan,
+                                                           lambda job: self.review_candidate(job, context))
                     break
                 except (PlanError, StageError) as exc:
+                    if isinstance(exc, PlanError) and exc.candidate:
+                        candidate = exc.candidate
                     feedback = self.app.redact(str(exc))[:1000]
-                    if attempt == 2:
+                    if attempt == 3:
                         raise ValueError(f'第 {index + 1} 条计划未通过校验。{feedback}') from exc
                     self.progress(f'整批策划：正在修正第 {index + 1}/{task["count"]} 条的校验问题')
             self.write(path, plan)
@@ -195,6 +200,15 @@ class Production:
             # A fresh request may repair structurally invalid proposals.
             cache_path.unlink(missing_ok=True)
             raise
+
+    def review_candidate(self, job, context):
+        self.invoke('validate-plan', job=job)
+        try:
+            note = self.editor.review_plan(context, self.read(job / 'plan.json'),
+                                           self.read(job / 'content-audit.json', {}))
+        except NeedsInput as exc:
+            raise PlanError(str(exc)) from exc
+        self.invoke('review-content', job=job, extra=['--note', note])
 
     def prepare_video(self, task, answer):
         plan_path = self.job / 'plan.json'

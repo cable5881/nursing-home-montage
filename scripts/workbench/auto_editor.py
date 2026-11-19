@@ -11,12 +11,23 @@ class NeedsInput(ValueError):
 
 
 class PlanError(ValueError):
-    pass
+    def __init__(self, message, candidate=None):
+        super().__init__(message)
+        self.candidate = candidate
 
 
 def chunks(items, count):
     for start in range(0, len(items), count):
         yield items[start:start + count]
+
+
+def source_evidence(sources):
+    evidence = {}
+    for source, text in sources.items():
+        for quote in re.findall(r'[^。！？\r\n]+[。！？]*', text):
+            if quote.strip():
+                evidence[f'e{len(evidence) + 1}'] = {'source': source, 'quote': quote.strip()}
+    return evidence
 
 
 def frame(path, second=None):
@@ -117,12 +128,7 @@ class Editor:
             output.append({'id': f'f{i}', 'text': text, 'source': source, 'quote': quote})
         return output
 
-    def batch_outline(self, context):
-        evidence = {}
-        for source, text in context['sources'].items():
-            for quote in re.findall(r'[^。！？\r\n]+[。！？]*', text):
-                if quote.strip():
-                    evidence[f'e{len(evidence) + 1}'] = {'source': source, 'quote': quote.strip()}
+    def batch_outline(self, context, evidence):
         data = {k: v for k, v in context.items() if k not in ('sources', 'media')}
         feedback = ''
         for _ in range(3):
@@ -150,17 +156,21 @@ class Editor:
                 return output
         raise ValueError('共同事实提炼未通过原文校验。' + feedback)
 
-    def plan(self, task, index, context, facts, previous, feedback=''):
+    def plan(self, task, index, context, facts, previous, feedback='', *, evidence=None, candidate=None):
         prefs = (task.get('videoPreferences') or [''] * task['count'])[index]
         person = (task.get('videoSpecs') or [{'person': task['person']}] * task['count'])[index]['person']
         revised = task.get('revisedNarration', '')
+        evidence = evidence or {}
         result = self.ask(
             '你负责写一条中文养老机构探访视频。按下列技能规则先写整篇口语稿并做语言润色，再分句选镜和定封面。'
             '仅使用真实素材，选片基于提供的实看结果。开头和结尾选有运动的源视频；在短片剩余时长足够的区间取镜，'
             '预计每秒 3.5 至 4 个汉字，给足分镜，sourceStart 使用秒数。不要指定资源路径、任何运行设置或关闭审核。'
-            '字幕由现有程序生成，可省略 captions；若有精确字幕偏好才逐条完整提供。'
+            '默认不要生成 captions，由现有程序自动分字幕。只有用户明确给定字幕要求时才填写。'
             '各事实写进实际口播后，在对应句的 factIds 数组中逐项标明传入的编号，如 ["f1","f2"]。'
-            '综合稿的 sentences 必须覆盖全部传入编号。收到 feedback 时先修正指出的问题。如果有事实遗漏，按原文补写再标注。'
+            '综合稿的 sentences 必须覆盖 facts 中全部 f 编号。额外细节可用 supportingEvidence 中支持该句的 e 编号，'
+            '这些细节无需全部写入。句子有多个事实时可标多个编号。封面标签或 publication 写了数字时也提供 factIds。'
+            '收到 feedback 时逐项修正。candidate 是待修订的上一个草稿，保留其中已符合要求的内容。'
+            '用对应原文编号支持每个事实句，不用无关编号凑数。'
             '仅在用户偏好明确指定专题时返回 topicAuthorization 原话。'
             '若 revisedNarration 非空，逐字保留用户文案及标点，可重新断句但不删改文字。不够信息时填 question。'
             '输出一个 JSON 对象。顶层结构为 {"plan":{},"openingAngle":"本条如何开场","structure":"本条展开顺序",'
@@ -169,8 +179,8 @@ class Editor:
             '封面放在 plan.cover，包含 main_title 和三个 labels；发布文案放在 plan.publication，'
             '包含 title、description 和五个不同的 topics。两个字段都按同一条完整口播撰写。\n'
             + self.rules('plan-schema', 'narration', 'narration-polish', 'covers'),
-            {**context, 'facts': facts, 'person': person, 'index': index + 1, 'total': task['count'],
-             'preference': prefs, 'previousAngles': previous, 'feedback': feedback,
+            {**context, 'facts': facts, 'supportingEvidence': evidence, 'person': person, 'index': index + 1, 'total': task['count'],
+             'preference': prefs, 'previousAngles': previous, 'feedback': feedback, 'candidate': candidate,
              'revisedNarration': revised, 'publicationOverride': task.get('publicationOverride', {})},
             max_tokens=12000)
         question(result)
@@ -180,7 +190,9 @@ class Editor:
         if not isinstance(raw.get('institution'), dict):
             raise PlanError('plan.institution 必须填写为对象。')
         plan = {key: raw[key] for key in ('institution', 'sentences', 'asrPrompt', 'cover', 'publication') if key in raw}
-        plan.update(version=1, person=person, facts=[{k: x[k] for k in ('id', 'source', 'quote')} for x in facts])
+        references = {x['id']: {k: x[k] for k in ('id', 'source', 'quote')} for x in facts}
+        references.update({ident: {'id': ident, **quote} for ident, quote in evidence.items()})
+        plan.update(version=1, person=person, facts=list(references.values()))
         plan['settings'] = {'music': {'enabled': task['music']}}
         if task.get('musicTrack'):
             plan['settings']['music']['resource'] = task['musicTrack']['resource']
@@ -215,7 +227,9 @@ class Editor:
         for number, sentence in enumerate(sentences, 1):
             ids = sentence.get('factIds', [])
             if not isinstance(ids, list) or any(not isinstance(f, str) for f in ids):
-                raise PlanError(f'第 {number} 句的 factIds 必须是编号字符串数组，如 ["f1","f2"]。')
+                raise PlanError(f'第 {number} 句的 factIds 必须是编号字符串数组，如 ["f1","f2"]。', result)
+            if sentence.get('kind', 'fact') == 'fact' and not ids:
+                raise PlanError(f'第 {number} 句是事实句，factIds 必须引用能支持该句的原文编号。', result)
             used.update(dict.fromkeys(ids))
         authorization = result.get('topicAuthorization') or ''
         if authorization and (not isinstance(authorization, str) or authorization not in task.get('requirements', '') + '\n' + prefs):
@@ -223,9 +237,9 @@ class Editor:
         angles = {k: result.get(k) for k in ('openingAngle', 'structure', 'coverAngle')}
         missing_angles = [k for k, v in angles.items() if not isinstance(v, str) or not v.strip()]
         if missing_angles:
-            raise PlanError('请补齐顶层策划角度字段 ' + '、'.join(missing_angles) + '。')
+            raise PlanError('请补齐顶层策划角度字段 ' + '、'.join(missing_angles) + '。', result)
         expected = {x['id'] for x in facts}
-        unknown = sorted(set(used) - expected)
+        unknown = sorted(set(used) - references.keys())
         missing = sorted(expected - set(used)) if not authorization else []
         issues = []
         if missing:
@@ -233,18 +247,21 @@ class Editor:
         if unknown:
             issues.append('factIds 使用了未提供的编号 ' + '、'.join(unknown))
         if issues:
-            raise PlanError('。'.join(issues) + '。')
-        return plan, {**angles, 'factCoverage': list(used), 'mode': 'topic' if authorization else 'comprehensive',
+            raise PlanError('。'.join(issues) + '。', result)
+        return plan, {**angles, 'factCoverage': [f for f in used if f in expected], 'mode': 'topic' if authorization else 'comprehensive',
                       'topicAuthorization': authorization}
 
     def content_review(self, job, answer):
         plan = self.read(job / 'plan.json')
         context = self.context({'requirements': ''}, job, answer)
+        return self.review_plan(context, plan, self.read(job / 'content-audit.json', {}))
+
+    def review_plan(self, context, plan, audit):
         response = self.ask(
             '核对每句口播与事实原文，核对语义及所有限定词。用已有实看素材描述核对文画关系及封面三槽。'
             '审核口语质量、覆盖范围、结尾咨询、封面及发布文案。材料未支持或文画明显不合时拒绝。'
             'JSON {"ok":true,"note":"具体到口播、事实和素材的审核观察"}。\n' + self.rules('content-review'),
-            {**context, 'plan': plan, 'audit': self.read(job / 'content-audit.json', {})})
+            {**context, 'plan': plan, 'audit': audit})
         return approved(response)
 
     def review_frames(self, job, paths, instructions, context=None):
