@@ -12,6 +12,7 @@ import voice_clone
 
 
 MAX_AUDIO_BYTES = 10_000_000
+AUDIO_FORMATS = {'.wav': 'wav', '.mp3': 'mp3', '.m4a': 'mov', '.aac': 'aac', '.flac': 'flac', '.ogg': 'ogg'}
 ACTIVE = {'queued', 'checking', 'submitting', 'training'}
 UNSENT = {'prepared', 'workbench_queued'}
 PERSON_ID = r'[A-Za-z0-9_-]{1,80}'
@@ -84,12 +85,7 @@ class VoiceTraining:
             source = Path(directory) / ('upload' + suffix)
             source.write_bytes(data)
             sample = source.with_name('sample.wav')
-            result = self.run(['ffmpeg', '-nostdin', '-v', 'error', '-protocol_whitelist', 'file,pipe',
-                               '-i', source, '-map', '0:a:0', '-ar', '24000', '-ac', '1', '-c:a',
-                               'pcm_s16le', '-fs', str(MAX_AUDIO_BYTES + 1), sample], capture_output=True, timeout=30)
-            if result.returncode:
-                raise ValueError('无法读取这个录音文件，请重新选择。')
-            self.sample({'sample': str(sample)})
+            self.normalize_sample(source, sample)
             with self.app.transaction():
                 cfg, person = self.load_person(ident)
                 if not self.public(person)['canUpload']:
@@ -105,6 +101,15 @@ class VoiceTraining:
                     destination.unlink(missing_ok=True)
                     raise
                 return self.public(person)
+
+    def normalize_sample(self, source, sample):
+        result = self.run(['ffmpeg', '-nostdin', '-v', 'error', '-protocol_whitelist', 'file,pipe',
+                           '-f', AUDIO_FORMATS[source.suffix], '-i', source, '-map', '0:a:0',
+                           '-ar', '24000', '-ac', '1', '-c:a', 'pcm_s16le', '-fs',
+                           str(MAX_AUDIO_BYTES + 1), sample], capture_output=True, timeout=30)
+        if result.returncode:
+            raise ValueError('无法读取这个录音文件，请重新选择。')
+        self.sample({'sample': str(sample)})
 
     def reserve(self, cfg, person, connection):
         if connection.get('clone_mode') == 'postpaid':

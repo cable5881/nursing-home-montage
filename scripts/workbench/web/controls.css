@@ -73,3 +73,19 @@ summary,.per-video-preferences summary,.publication-edit summary,.cover-photo-se
 .person-voice p { margin: 0; }
 .person-voice-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .person-card-content code { overflow-wrap: anywhere; }
+
+.person-upload-fields .form-group { min-width: 0; }
+.person-upload-fields .input { margin-top: 8px; padding: 8px; }
+.person-upload-fields .input::file-selector-button {
+  margin-inline-end: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--soft);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+@media (max-width: 620px) {
+  .person-upload-fields.form-row { grid-template-columns: minmax(0, 1fr); }
+}

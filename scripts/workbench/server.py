@@ -283,34 +283,40 @@ class App:
         with self.transaction():
             ident = values.get("id")
             if not ident:
-                folder = Path(values.get("folder", "")).expanduser().resolve()
-                if not folder.is_dir() or not values.get("folder"):
-                    raise ValueError("请先选择包含人物照片的文件夹")
-                result = self.people.import_people(folder, "main")
-                if not result["imported"]:
-                    raise ValueError("未找到人物照片。每个人物文件夹放一张照片，可选一段声音样本。")
-                if len(result["imported"]) > 1:
-                    return {"imported": result["imported"], "config": self.config()}
-                ident = result["imported"][0]["id"]
+                raise ValueError('请同时上传一张人物图片和一段录音。')
             cfg = self.pc.load()
             if ident not in cfg["people"]:
                 raise ValueError("人物不存在")
             if values.get('speaker') and self.voice_training.active(ident):
                 raise ValueError('音色复刻进行中，请等结果返回后再修改音色 ID。')
-            name = str(values.get("name", cfg["people"][ident]["name"])).strip()
-            if not name:
-                raise ValueError("请填写人物名称")
-            cfg["people"][ident]["name"] = name[:60]
-            if values.get("speech_rate") is not None:
-                cfg["people"][ident]["speech_rate"] = max(-50, min(100, int(values["speech_rate"])))
+            self.apply_person_fields(cfg, cfg['people'][ident], values)
             self.pc.write(self.pc.directory() / "project.json", cfg)
-            if values.get("social_media_name"):
-                self.people.identity(ident, {"social_media_name": values["social_media_name"]})
-            if values.get("speaker"):
-                self.people.bind(ident, values["speaker"].strip(), values.get("custom_speaker_id") or None)
-            if values.get("default"):
-                self.pc.save_patch({"default_person": ident})
         return {"id": ident, "config": self.config()}
+
+    def apply_person_fields(self, cfg, person, values):
+        name = str(values.get('name', person.get('name', ''))).strip()
+        if not name:
+            raise ValueError('请填写人物名称。')
+        others = [p for p in cfg['people'].values() if p['id'] != person['id']]
+        person['name'] = name[:60]
+        if values.get('speech_rate') not in (None, ''):
+            person['speech_rate'] = max(-50, min(100, int(values['speech_rate'])))
+        social = values.get('social_media_name', '').strip()
+        if social:
+            if any(p.get('social_media_name') == social for p in others):
+                raise ValueError('该社媒名已绑定其他数字人，请指定不同名字。')
+            person['social_media_name'] = social
+        speaker = values.get('speaker', '').strip()
+        if speaker:
+            custom = values.get('custom_speaker_id') or None
+            if speaker == 'custom_speaker_id' and not custom:
+                raise ValueError('请填写自定义音色 ID。')
+            if any((p.get('speaker'), p.get('custom_speaker_id'), p['connection']) ==
+                   (speaker, custom, person['connection']) for p in others):
+                raise ValueError('该音色已绑定其他人物。')
+            person.update(speaker=speaker, custom_speaker_id=custom, status='ready')
+        if values.get('default') or (speaker and not cfg.get('default_person')):
+            cfg['default_person'] = person['id']
 
     def scan(self, folder):
         p = Path(folder).expanduser().resolve()
@@ -605,6 +611,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.upload(parse_qs(url.query))
             if url.path == '/api/music/upload':
                 return self.upload_music(parse_qs(url.query))
+            if url.path == '/api/people' and self.headers.get('Content-Type', '').split(';')[0] == 'multipart/form-data':
+                return self.upload_person()
             match = re.fullmatch(r'/api/people/([A-Za-z0-9_-]{1,80})/voice-sample', url.path)
             if match:
                 return self.upload_voice_sample(match[1], parse_qs(url.query))
@@ -724,6 +732,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(400, {"error": self.app.redact(str(e))})
         except Exception as e:
             return self.reply(500, {"error": self.app.redact(str(e))[:500]})
+
+    def upload_person(self):
+        from person_upload import MAX_UPLOAD_BYTES, create_person, read_form
+        length = int(self.headers.get('Content-Length', 0))
+        if not 0 < length <= MAX_UPLOAD_BYTES:
+            raise ValueError('图片最多 20 MB，录音最多 10 MB。')
+        body = self.rfile.read(length)
+        if len(body) != length:
+            raise ValueError('上传中断，请重新保存。')
+        values, photo, recording = read_form(self.headers['Content-Type'], body)
+        ident = create_person(self.app, values, photo, recording, run_command)
+        return self.reply(201, {'id': ident, 'config': self.app.config()})
 
     def upload_voice_sample(self, ident, q):
         from voice_training import MAX_AUDIO_BYTES

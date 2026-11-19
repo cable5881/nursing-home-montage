@@ -372,17 +372,58 @@ function renderPeople() {
   main.innerHTML = `${heading('每条视频，都有自己的主角。','照片、音色和社媒署名绑定在一起，选好人物就能直接制作。',`<button class="secondary" data-action="add-person">${icon('plus')} 添加数字人</button>`)}<div class="people-grid">${state.config.people.map(p => `<article class="person-card"><div class="portrait-area">${p.hasPortrait ? `<img src="/media/person/${E(p.id)}" alt="${E(p.name)}的数字人照片">` : ''}${p.isDefault ? badge('默认出镜') : ''}</div><div class="person-card-content"><h2>${E(p.name)} <span data-person-ready="${E(p.id)}">${personReadiness(p)}</span></h2><p>${E(p.social_media_name || '还没有设置社媒署名')}</p><div data-person-voice="${E(p.id)}">${personVoice(p)}</div><button class="secondary" data-action="edit-person" data-id="${E(p.id)}">编辑人物资料 ${icon('arrow-right')}</button></div></article>`).join('')}<button class="add-person" data-action="add-person">${icon('plus')}<strong>添加一位新数字人</strong><small>一张照片，一段声音。<br>让更多人替你讲述。</small></button></div><div id="person-editor">${editPerson !== undefined ? personEditor() : ''}</div>`;
   bindPerson();
 }
-let personFolder = '';
+function personUploadFields() {
+  return `<div class="form-row person-upload-fields">
+    <div class="form-group">
+      <label class="field-label" for="person-photo">人物图片 <span class="optional">必填</span></label>
+      <input class="input" type="file" id="person-photo" name="photo" accept=".jpg,.jpeg,.png,.webp" aria-describedby="person-photo-help" required>
+      <p id="person-photo-help" class="form-help">上传一张正面照片。JPG、PNG 或 WebP，最多 20 MB。</p>
+    </div>
+    <div class="form-group">
+      <label class="field-label" for="person-recording">人物音频 <span class="optional">必填</span></label>
+      <input class="input" type="file" id="person-recording" name="recording" accept=".wav,.mp3,.m4a,.aac,.flac,.ogg" aria-describedby="person-recording-help" required>
+      <p id="person-recording-help" class="form-help">上传一段干净的单人录音，最多 10 MB。</p>
+    </div>
+  </div>`;
+}
 function personEditor() {
   const p = state.config.people.find(p => p.id === editPerson);
-  return `<section class="panel editor-panel"><div class="editor-heading"><h2>${p ? '编辑 ' + E(p.name) : '添加一个数字人'}</h2><button data-action="close-editor" aria-label="关闭人物编辑">${icon('close')}</button></div><form id="person-form">${!p ? `<div class="form-group"><div class="label-row"><label>照片与声音样本</label><button type="button" class="text-button" data-action="import-person">导入文件夹 ${icon('arrow-up-right')}</button></div><button type="button" class="source-select" data-action="pick-person"><span class="source-icon">${icon('person')}</span><span class="source-content"><strong>${E(personFolder ? personFolder.split('/').filter(Boolean).pop() : '选择人物文件夹')}</strong><small>每个文件夹一张正面照片，可选一段干净的单人录音</small></span>${icon('plus')}</button><input class="input" name="folder" value="${E(personFolder)}" placeholder="也可以粘贴本地文件夹路径" style="margin-top:10px"></div>` : `<input type="hidden" name="id" value="${E(p.id)}">`}<div class="form-row"><div class="form-group"><label class="field-label" for="person-name" style="margin-bottom:10px">人物名称</label><input id="person-name" name="name" class="input" value="${E(p?.name)}" placeholder="例如：小林" ${p ? 'required' : ''}></div><div class="form-group"><label class="field-label" for="person-social" style="margin-bottom:10px">社媒署名</label><input id="person-social" name="social_media_name" class="input" value="${E(p?.social_media_name)}" placeholder="例如：小林带你看养老" required></div></div><div class="form-group"><label class="field-label" for="person-speaker" style="margin-bottom:10px">音色 ID<span class="optional">有音色直接填写；没有可留空</span></label><input id="person-speaker" name="speaker" class="input" value="${E(p?.speaker)}" placeholder="例如：S_xxxxxxxx"><p class="form-help">复刻成功后会自动填入音色 ID。</p></div>${p?`<div id="person-voice-editor" class="form-group">${personVoice(p,true)}</div>`:'<p class="form-help">人物保存后可以上传录音并开始复刻。</p>'}<details class="form-group"><summary class="field-label">自定义音色与语速<span class="optional">高级选项</span></summary><div class="form-row" style="margin-top:15px"><div class="form-group"><label class="field-label" for="custom-speaker">自定义音色 ID</label><input class="input" id="custom-speaker" name="custom_speaker_id" value="${E(p?.custom_speaker_id)}" placeholder="speaker 为 custom_speaker_id 时填写"></div><div class="form-group"><label class="field-label" for="speech-rate">语速参数</label><input class="input" type="number" min="-50" max="100" id="speech-rate" name="speech_rate" value="${p?.speech_rate ?? -3}"><p class="form-help">0 为标准速度，负数稍慢，正数稍快。</p></div></div></details><div class="switch-row"><label for="person-default">设为默认出镜人物</label><input class="switch" type="checkbox" name="default" id="person-default" ${p?.isDefault || !state.config.people.length ? 'checked' : ''}></div><div id="person-error" class="inline-error error-slot" role="alert"></div><button class="primary" type="submit" style="margin-top:16px">${icon('save')} 保存人物资料</button></form></section>`;
+  return `<section class="panel editor-panel"><div class="editor-heading"><h2>${p ? '编辑 ' + E(p.name) : '添加一个数字人'}</h2><button data-action="close-editor" aria-label="关闭人物编辑">${icon('close')}</button></div><form id="person-form">${p ? `<input type="hidden" name="id" value="${E(p.id)}">` : personUploadFields()}<div class="form-row"><div class="form-group"><label class="field-label" for="person-name" style="margin-bottom:10px">人物名称</label><input id="person-name" name="name" class="input" value="${E(p?.name)}" placeholder="例如：小林" required></div><div class="form-group"><label class="field-label" for="person-social" style="margin-bottom:10px">社媒署名</label><input id="person-social" name="social_media_name" class="input" value="${E(p?.social_media_name)}" placeholder="例如：小林带你看养老" required></div></div><div class="form-group"><label class="field-label" for="person-speaker" style="margin-bottom:10px">音色 ID<span class="optional">有音色直接填写；没有可留空</span></label><input id="person-speaker" name="speaker" class="input" value="${E(p?.speaker)}" placeholder="例如：S_xxxxxxxx"><p class="form-help">复刻成功后会自动填入音色 ID。</p></div>${p?`<div id="person-voice-editor" class="form-group">${personVoice(p,true)}</div>`:'<p class="form-help">人物保存后可以开始复刻。</p>'}<details class="form-group"><summary class="field-label">自定义音色与语速<span class="optional">高级选项</span></summary><div class="form-row" style="margin-top:15px"><div class="form-group"><label class="field-label" for="custom-speaker">自定义音色 ID</label><input class="input" id="custom-speaker" name="custom_speaker_id" value="${E(p?.custom_speaker_id)}" placeholder="speaker 为 custom_speaker_id 时填写"></div><div class="form-group"><label class="field-label" for="speech-rate">语速参数</label><input class="input" type="number" min="-50" max="100" id="speech-rate" name="speech_rate" value="${p?.speech_rate ?? -3}"><p class="form-help">0 为标准速度，负数稍慢，正数稍快。</p></div></div></details><div class="switch-row"><label for="person-default">设为默认出镜人物</label><input class="switch" type="checkbox" name="default" id="person-default" ${p?.isDefault || !state.config.people.length ? 'checked' : ''}></div><div id="person-error" class="inline-error error-slot" role="alert"></div><button class="primary" type="submit" style="margin-top:16px">${icon('save')} 保存人物资料</button></form></section>`;
 }
 function bindPerson() {
-  const form = $('#person-form'); if (!form) return;
-  form.addEventListener('submit', async e => { e.preventDefault(); $('#person-error').textContent = ''; await busy(form.querySelector('[type=submit]'), async () => {
-    try { const v = Object.fromEntries(new FormData(form)); if (!v.name) delete v.name; await api('/api/people', {...v, default:form.elements.default.checked}); editPerson = undefined; personFolder = ''; await refresh(false); renderPeople(); notify('人物资料已保存'); }
-    catch (err) { $('#person-error').textContent = err.message; }
-  }); });
+  const form = $('#person-form');
+  if (!form) return;
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const errorSlot = form.querySelector('#person-error');
+    errorSlot.textContent = '';
+    const button = form.querySelector('[type=submit]');
+    await busy(button, async () => {
+      const data = new FormData(form);
+      try {
+        if (data.has('id')) {
+          await api('/api/people', {...Object.fromEntries(data), default:form.elements.default.checked});
+          editPerson = undefined;
+        } else {
+          const label = button.innerHTML;
+          button.textContent = '正在上传并保存…';
+          try {
+            const response = await fetch('/api/people', {method:'POST', body:data});
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error);
+            editPerson = result.id;
+          } finally {
+            button.innerHTML = label;
+          }
+        }
+        await refresh(false);
+        if (route === 'people') renderPeople();
+        notify('人物资料已保存');
+      } catch (error) {
+        errorSlot.textContent = error.message;
+      }
+    });
+  });
 }
 function renderWorks() {
   const filtered = state.tasks.filter(t => worksFilter === 'all' || (worksFilter === 'completed' ? ['completed','awaiting_acceptance','accepted'].includes(t.status) : !['completed','awaiting_acceptance','accepted'].includes(t.status)));
@@ -427,14 +468,13 @@ function render() {
 }
 async function busy(button, fn) {if (button.disabled)return;button.disabled=true;button.setAttribute('aria-busy','true');try{await fn();}finally{if(button.isConnected){button.disabled=false;button.removeAttribute('aria-busy');}}}
 async function scan(folder) {const result = await api('/api/scan',{folder});scanResult=result;createDraft.source=result.folder;saveDraft();renderCreate();notify(`已读取 ${result.counts.video} 段视频、${result.counts.image} 张照片和 ${result.counts.text} 份介绍`);}
-async function pickFolder(target, button) {
-  await busy(button, async () => {try {const r=await api('/api/pick-folder',{});if(r.cancelled)return;if(target==='source'){await scan(r.folder);}else{personFolder=r.folder;$('#person-editor').innerHTML=personEditor();bindPerson();}}catch(err){notify(err.message,true);}});
+async function pickFolder(button) {
+  await busy(button, async () => {try {const r=await api('/api/pick-folder',{});if(!r.cancelled)await scan(r.folder);}catch(err){notify(err.message,true);}});
 }
 const allowedFile = /\.(mp4|mov|m4v|mkv|avi|webm|jpg|jpeg|png|webp|heic|txt|md|docx|pdf|wav|mp3|m4a|aac|flac|ogg)$/i;
 async function importFolder(files) {
   const filtered = [...files].filter(f=>allowedFile.test(f.name)&&!(f.webkitRelativePath||f.name).split('/').some(p=>p.startsWith('.')));
   if(!filtered.length){notify('没有可导入的视频、照片、文字或声音文件',true);return;}
-  const target=uploadTarget;
   const group=crypto.randomUUID().replaceAll('-','').slice(0,12);
   let folder;
   try {
@@ -443,7 +483,7 @@ async function importFolder(files) {
       const response=await fetch(`/api/upload?group=${group}&name=${encodeURIComponent(f.webkitRelativePath||f.name)}`,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f});
       const result=await response.json();if(!response.ok)throw new Error(result.error);folder=result.folder;
     }
-    if(target==='source'){await scan(folder);}else{personFolder=folder;$('#person-editor').innerHTML=personEditor();bindPerson();notify('人物素材已导入');}
+    await scan(folder);
   }catch(err){notify('导入未完成：'+err.message,true);}
   $('#folder-upload').value='';
 }
@@ -454,16 +494,15 @@ document.addEventListener('click', async e=>{
     if(action==='onboarding')setRoute('onboarding');
     if(action==='agent-settings')setRoute('settings');
     if(action==='focus-source'){if(route!=='create')setRoute('create');else $('#source-drop')?.focus();}
-    if(action==='pick-source')await pickFolder('source',button);
-    if(action==='pick-person')await pickFolder('person',button);
+    if(action==='pick-source')await pickFolder(button);
     if(action==='scan-source')await busy(button,()=>scan($('#create-form').elements.source.value));
-    if(action==='import-source'||action==='import-person'){uploadTarget=action==='import-source'?'source':'person';$('#folder-upload').click();}
+    if(action==='import-source'){uploadTarget='source';$('#folder-upload').click();}
     if(action==='reveal'){await toggleCredentialVisibility(button);}
     if(action==='check-agent'){await api('/api/check-agent',{});await refresh(false);if($('#agent-config-status'))$('#agent-config-status').innerHTML=agentStatusBlock();updateChrome();notify(state.config.agent.canDispatch?'接单通道已有回传':'恢复连接请求已保存。请在 WorkBuddy 按连接方式接入本地文件通道。');}
     if(action==='copy-agent'){await navigator.clipboard.writeText(state.config.agent.instruction);notify('已复制，在 Agent 中粘贴并发送即可');}
     if(action==='open-workbuddy'){await api('/api/open-workbuddy',{});notify('已打开 Agent');}
     if(action==='preview')setRoute('preview/'+(button.dataset.reference?'reference':button.dataset.id+'/'+button.dataset.index));
-    if(action==='add-person'){editPerson=null;personFolder='';renderPeople();$('#person-editor').scrollIntoView({block:'start',behavior:'smooth'});}
+    if(action==='add-person'){editPerson=null;renderPeople();$('#person-editor').scrollIntoView({block:'start',behavior:'smooth'});}
     if(action==='edit-person'){editPerson=button.dataset.id;renderPeople();$('#person-editor').scrollIntoView({block:'start',behavior:'smooth'});}
     if(action==='close-editor'){editPerson=undefined;renderPeople();}
     if(action==='pick-voice-sample')$('#person-voice-file')?.click();
