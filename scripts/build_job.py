@@ -31,6 +31,46 @@ def caption_parts(s, typography, protected, characters, cursor):
             result.append({'text':''.join(lines),'lines':lines,'focus':''})
         cursor+=count
     return result
+
+
+def fit_shot_windows(shots, files, count, fps):
+    """Allocate measured narration frames within the reviewed source footage."""
+    if count<len(shots):raise ValueError('Too many shots for this sentence')
+    weights=[shot.get('weight',1) for shot in shots]
+    total=sum(weights)
+    starts=[];limits=[];lengths=[];previous=0
+    for i,shot in enumerate(shots):
+        end=round(count*sum(weights[:i+1])/total) if i+1<len(shots) else count
+        end=min(count-(len(shots)-i-1),max(previous+1,end))
+        row=files[shot['path']];start=shot.get('sourceStart',0);cap=count
+        if row['kind']=='video':
+            if (row['duration']+.001)*fps<1:raise ValueError('Source video has no complete frame: '+shot['path'])
+            start=min(start,max(0,row['duration']+.001-1/fps))
+            cap=math.floor((row['duration']-start+.001)*fps+1e-9)
+        starts.append(start);limits.append(cap);lengths.append(min(end-previous,cap));previous=end
+    remaining=count-sum(lengths)
+    # Keep the chosen start points whenever other shots can fill the gap.
+    for i in sorted(range(len(shots)),key=lambda i:limits[i]-lengths[i],reverse=True):
+        extra=min(remaining,limits[i]-lengths[i]);lengths[i]+=extra;remaining-=extra
+    for i,shot in enumerate(shots):
+        if not remaining:break
+        row=files[shot['path']]
+        if row['kind']!='video':continue
+        extra=min(remaining,math.floor((row['duration']+.001)*fps+1e-9)-lengths[i])
+        if extra:
+            lengths[i]+=extra;remaining-=extra
+            starts[i]=min(starts[i],max(0,row['duration']-lengths[i]/fps))
+    fitted=list(zip(shots,starts,lengths))
+    if remaining:
+        # Replay a reviewed moving shot from this sentence if its footage is exhausted.
+        index=max(range(len(shots)),key=lengths.__getitem__)
+        if lengths[index]<fps:raise ValueError('分镜缺少足够的实拍时长')
+        while remaining:
+            extra=min(remaining,lengths[index]);remaining-=extra
+            fitted.append((shots[index],0,extra))
+    return fitted
+
+
 def build(job):
     plan,files=validate_plan(job);setup(job);cfg=settings(job)
     v=read(job/'voice.json');source=Path(v['audio']);text=(job/'narration.txt').read_text(encoding='utf-8').strip()
@@ -78,17 +118,13 @@ def build(job):
     source_root=Path(read(job/'inventory.json')['source']);shots=[];ledger=[]
     for si,sentence in enumerate(plan['sentences']):
         selected=sentence['shots'];start_frame=round(boundaries[si]*fps);last_frame=round(boundaries[si+1]*fps);count=last_frame-start_frame
-        if count<len(selected):raise ValueError('Too many shots for this sentence')
-        weights=[s.get('weight',1) for s in selected];running=0
-        for k,s in enumerate(selected):
-            next_running=round(count*sum(weights[:k+1])/sum(weights)) if k+1<len(selected) else count
-            st=(start_frame+running)/fps;end=(start_frame+next_running)/fps;running=next_running
+        running=start_frame
+        for s,src_start,length in fit_shot_windows(selected,files,count,fps):
+            st=running/fps;running+=length;end=running/fps
             row=files[s['path']];orig=(source_root/s['path']).resolve()
             if sha(orig)!=row['sha256']:raise RuntimeError('Input changed since inventory: '+s['path'])
             ext=orig.suffix.lower();dest=job/'assets/footage'/(row['sha256'][:12]+ext)
             copy_asset(orig,dest)
-            src_start=s.get('sourceStart',0)
-            if row['kind']=='video' and src_start+end-st>row['duration']+.001:raise ValueError('Selected video window is too short; add another real shot or change its source start: '+s['path'])
             shot={'id':f'shot-{len(shots):02}','asset':str(dest.relative_to(job)),'start':st,'end':end,'duration':end-st,'sourceStart':src_start,'positionY':s.get('positionY',50),'description':s['description'],'sentenceIndex':si}
             shots.append(shot);ledger.append({'file':shot['asset'],'source':str(orig),'sha256':row['sha256'],'kind':row['kind'],'modified':False})
     write(job/'shot-list.json',shots);write(job/'asset-sources.json',ledger)

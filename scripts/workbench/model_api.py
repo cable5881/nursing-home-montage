@@ -78,6 +78,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class ModelResponseError(ValueError):
+    pass
+
+
 class ModelClient:
     def __init__(self, name, model, key, base_url=None, output_mode='json'):
         self.name = name
@@ -137,9 +141,9 @@ class ModelClient:
                     content = fenced.group(1)
             result = json.loads(content)
         except (ValueError, TypeError, IndexError, KeyError, AttributeError):
-            raise ValueError('模型没有返回完整的 JSON，当前步骤可重试。') from None
+            raise ModelResponseError('模型没有返回完整的 JSON，当前步骤可重试。') from None
         if not isinstance(result, dict):
-            raise ValueError('模型返回的内容需为 JSON 对象。')
+            raise ModelResponseError('模型返回的内容需为 JSON 对象。')
         return result
 
     def test(self):

@@ -210,7 +210,12 @@ def setup(job,install=False):
         install_dependencies(project_root(),job,template,run)
     return {'project':str(job),'dependenciesInstalled':install}
 
-def align_audio(audio,text,out,cfg,prompt=''):
+def institution_asr_hint(plan):
+    name=plan.get('institution',{}).get('name','')
+    return '机构专名：'+name.translate(str.maketrans('','','（）()')) if name else ''
+
+
+def align_audio(audio,text,out,cfg,prompt='',*,retry_prompt=''):
     from faster_whisper import WhisperModel
     import difflib
     from opencc import OpenCC
@@ -220,12 +225,20 @@ def align_audio(audio,text,out,cfg,prompt=''):
         if d.get('sha256')==sha(audio) and d.get('textSha256')==digest(text) and d.get('passed'):return d
     cache=Path.home()/cfg['alignment']['local_cache'];model_path=str(cache) if cache.exists() else cfg['alignment']['model']
     model=WhisperModel(model_path,device='cpu',compute_type='int8',cpu_threads=cfg['alignment']['threads'])
-    parts,_=model.transcribe(str(audio),language='zh',beam_size=5,word_timestamps=True,vad_filter=False,initial_prompt=prompt or None)
-    cc=OpenCC('t2s');rows=[]
-    for s in parts:rows.append({'start':s.start,'end':s.end,'text':cc.convert(s.text),'words':[{'word':cc.convert(w.word),'start':w.start,'end':w.end,'probability':w.probability} for w in s.words or []]})
-    recognized=''.join(r['text'] for r in rows);a,b=phonemes(text),phonemes(recognized)
-    diff=[{'op':tag,'expected':a[x:y],'recognized':b[u:v]} for tag,x,y,u,v in difflib.SequenceMatcher(None,a,b,autojunk=False).get_opcodes() if tag!='equal']
-    result={'sha256':sha(audio),'textSha256':digest(text),'expected':text,'recognized':recognized,'differences':diff,'passed':bool(a) and not diff,'method':'local faster-whisper medium word alignment with simplified Chinese and numeral normalization','humanListeningPerformed':False,'segments':rows}
+    cc=OpenCC('t2s');expected=phonemes(text)
+    def recognize(hint):
+        parts,_=model.transcribe(str(audio),language='zh',beam_size=5,word_timestamps=True,vad_filter=False,initial_prompt=hint or None)
+        rows=[{'start':s.start,'end':s.end,'text':cc.convert(s.text),'words':[{'word':cc.convert(w.word),'start':w.start,'end':w.end,'probability':w.probability} for w in s.words or []]} for s in parts]
+        recognized=''.join(r['text'] for r in rows);actual=phonemes(recognized)
+        differences=[{'op':tag,'expected':expected[x:y],'recognized':actual[u:v]} for tag,x,y,u,v in difflib.SequenceMatcher(None,expected,actual,autojunk=False).get_opcodes() if tag!='equal']
+        return rows,recognized,differences
+    rows,recognized,diff=recognize(prompt)
+    first_diff=None
+    if diff and retry_prompt and retry_prompt!=prompt:
+        first_diff=diff
+        rows,recognized,diff=recognize(retry_prompt)
+    result={'sha256':sha(audio),'textSha256':digest(text),'expected':text,'recognized':recognized,'differences':diff,'passed':bool(expected) and not diff,'method':'local faster-whisper medium word alignment with simplified Chinese and numeral normalization','humanListeningPerformed':False,'segments':rows}
+    if first_diff is not None:result['properNameRetry']={'firstDifferences':first_diff,'prompt':retry_prompt}
     if not diff:
         from alignment import character_map
         try:
@@ -278,7 +291,7 @@ def voice(job,reuse=None):
         r=engine(job,['resume',out,'--audio-only'])
     if r.returncode not in (0,3):raise RuntimeError(r.stdout[-2200:]+r.stderr[-1000:])
     s=read(out/'run.json');audio=Path(s['tts']['file'])
-    alignment=align_audio(audio,text,out,cfg,plan.get('asrPrompt',''))
+    alignment=align_audio(audio,text,out,cfg,plan.get('asrPrompt',''),retry_prompt=institution_asr_hint(plan))
     if s.get('qa_status') not in ('passed','reviewed'):
         r=engine(job,['review',out,'--note','Independent medium model phoneme and word check passed; no human listening claimed.','--evidence',out/'alignment-check.json'])
         if r.returncode:raise RuntimeError(r.stdout)

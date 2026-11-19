@@ -222,11 +222,14 @@ class Production:
         folder = self.app.data / 'queue-workers' / self.item / 'revision-input' if is_revision else self.job
         self.inventory(task, folder)
         context = self.editor.context(task, folder, answer)
-        facts = self.editor.outline(context)
-        feedback = ''
+        evidence = source_evidence(context['sources'])
+        facts = self.editor.batch_outline(context,evidence)
+        feedback = '';candidate = None;requested_info = None
         for _ in range(3):
             try:
-                plan, _ = self.editor.plan(task, self.row['index'], context, facts, [], feedback)
+                plan, _ = self.editor.plan(task, self.row['index'], context, facts, [], feedback,
+                                           evidence=evidence, candidate=candidate)
+                candidate = {'plan':plan}
                 if is_revision:
                     revised = folder.parent / 'revised-plan.json'
                     self.write(revised, plan)
@@ -235,16 +238,23 @@ class Production:
                 else:
                     self.write(marker, {'generated': True})
                     self.write(plan_path, plan)
-                self.invoke('validate-plan')
-                if not is_revision:
+                    # Verify the complete plan before starting voice, so factual review
+                    # can request another draft without invalidating paid assets.
+                    self.review_candidate(self.job,context)
                     self.write(marker, {'validated': fingerprint(plan_path)})
+                if is_revision:self.invoke('validate-plan')
                 return
-            except NeedsInput:
-                raise
+            except NeedsInput as exc:
+                if is_revision:raise
+                requested_info=exc
+                feedback='略过未提供的非必需细节，用已核验的机构资料完成原要求。上次问题：'+self.app.redact(str(exc))[:1000]
             except (ValueError, KeyError, AttributeError, TypeError) as exc:
                 if is_revision:
                     raise
+                requested_info=None
+                candidate=getattr(exc,'candidate',None) or candidate
                 feedback = self.app.redact(str(exc))[:1500]
+        if requested_info is not None:raise requested_info
         raise ValueError('模型计划未能通过结构检查：' + feedback)
 
     def review(self, gate, answer):

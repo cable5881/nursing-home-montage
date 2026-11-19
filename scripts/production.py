@@ -65,7 +65,8 @@ def avatars(job,wait_seconds=45):
         else:
             r=engine(job,['generate','--text',a['text'],'--reuse-audio',audio,'--out',run_dir,'--wait-seconds',str(wait_seconds)],service='avatar')
         if r.returncode==3:
-            s=read(run_dir/'run.json');check=align_audio(Path(s['tts']['file']),a['text'],run_dir,cfg)
+            s=read(run_dir/'run.json')
+            align_audio(Path(s['tts']['file']),a['text'],run_dir,cfg,retry_prompt=institution_asr_hint(read(job/'plan.json')))
             r=engine(job,['review',run_dir,'--note','Independent medium model phoneme check passed; no human listening claimed.','--evidence',run_dir/'alignment-check.json'],service='avatar')
             if r.returncode:raise RuntimeError(r.stdout)
             r=engine(job,['resume',run_dir,'--wait-seconds',str(wait_seconds)],service='avatar')

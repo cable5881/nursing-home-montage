@@ -3,7 +3,14 @@ from pathlib import Path
 import re
 import subprocess
 
-from model_api import image_part
+from model_api import ModelResponseError, image_part
+
+
+NARRATOR_CONTEXT = (
+    '任务中已选的人物是已配置的数字人解说角色。仅用机构资料和实拍做介绍，'
+    '无需补充解说人的现实身份、机构关系、到访日期、实际行程或授权信息。'
+    '未提供的非必需信息直接略过，只有缺少完成用户必需要求的资料才提问。'
+)
 
 
 class NeedsInput(ValueError):
@@ -65,36 +72,46 @@ class Editor:
         visual = [x for x in inventory['files'] if x['kind'] in ('image', 'video')]
         cache = folder / 'independent-media-review.json'
         stored = self.read(cache, {})
-        result = []
-        for group in chunks(visual, 4):
-            missing = [x for x in group if x.get('sha256') not in stored]
-            if missing:
-                visuals = []
-                for row in missing:
+        candidates = {f'M{i}': row for i, row in enumerate(visual, 1)}
+        frames = {}
+
+        def observe(ids):
+            visuals = []
+            for ident in ids:
+                row = candidates[ident]
+                if ident not in frames:
                     p = (root / row['path']).resolve()
                     if not p.is_relative_to(root):
                         raise ValueError('素材路径越出了所在机构目录。')
-                    if row['kind'] == 'video':
-                        duration = row['duration']
-                        for t in (duration * .2, duration * .65):
-                            visuals.append((f"{row['path']} | {t:.2f} 秒", frame(p, t)))
-                    else:
-                        visuals.append((row['path'], frame(p)))
+                    times = (.2 * row['duration'], .65 * row['duration']) if row['kind'] == 'video' else (None,)
+                    frames[ident] = [(f'{ident} 图 {index}', frame(p, time)) for index, time in enumerate(times, 1)]
+                visuals.extend(frames[ident])
+            try:
                 response = self.ask(
-                    '观察每张实图。按文件名归纳可见内容、裁剪关注位置，视频对照两个时点描述可见运动。'
-                    '不凭图片推断护理水平或其他事实。JSON {"media":[{"path":"文件名","description":"可见细节","motion":true}]}。',
-                    {'paths': [x['path'] for x in missing]}, visuals)
-                by_path = {x.get('path'): x for x in response.get('media', []) if isinstance(x, dict)}
-                if set(by_path) != {x['path'] for x in missing}:
-                    raise ValueError('模型未逐项完成素材观察，可重试当前步骤。')
-                for x in missing:
-                    observation = by_path[x['path']]
-                    note = observation.get('description')
-                    if not isinstance(note, str) or not note.strip():
-                        raise ValueError('模型缺少素材观察记录。')
-                    stored[x['sha256']] = {'description': note[:700], 'motion': x['kind'] == 'video' and observation.get('motion') is True}
-                self.write(cache, stored)
-            result.extend({k: x[k] for k in ('path', 'kind', 'duration', 'width', 'height')} | stored[x['sha256']] for x in group)
+                    '按素材短编号观察实图。每个编号返回一条可见内容，视频对照两个时点描述可见运动。'
+                    '不凭图片推断护理水平或身份。JSON {"media":[{"id":"M1","description":"可见细节","motion":true}]}。',
+                    {'media': {i: candidates[i]['kind'] for i in ids}}, visuals)
+            except ModelResponseError:
+                return
+            items = response.get('media')
+            if not isinstance(items,list):return
+            observed = set()
+            for item in items:
+                if not isinstance(item,dict):continue
+                ident,note = item.get('id'),item.get('description')
+                if not isinstance(ident,str) or ident not in ids or ident in observed or not isinstance(note,str) or not note.strip():continue
+                row = candidates[ident]
+                stored[row['sha256']] = {'description':note.strip()[:700], 'motion':row['kind']=='video' and item.get('motion') is True}
+                observed.add(ident)
+            if observed:self.write(cache,stored)
+
+        for group in chunks(list(candidates),4):
+            missing = [i for i in group if candidates[i]['sha256'] not in stored]
+            if missing:observe(missing)
+            for ident in missing:
+                if candidates[ident]['sha256'] not in stored:observe([ident])
+        result = [{k:x[k] for k in ('path','kind','duration','width','height')} | stored[x['sha256']]
+                  for x in visual if x['sha256'] in stored]
         if not any(x['kind'] == 'video' and x['motion'] for x in result):
             raise NeedsInput('当前素材观察未找到适合开头和结尾的移动视频，请补充实拍移动素材或说明哪段可用。')
         return result
@@ -108,38 +125,17 @@ class Editor:
             'requirements': task.get('requirements', ''), 'answer': answer,
         }
 
-    def outline(self, context):
-        result = self.ask(
-            '为养老机构的综合探访找出主要事实。只用当前资料可逐字引用的内容，保留各项限定词。'
-            '选择资料里能支撑的共同主线，事实不足时给出需补充的具体问题。JSON '
-            '{"facts":[{"text":"口语事实概括","source":"对应原文文件名","quote":"原文逐字符引用"}],"question":null}。',
-            {k: v for k, v in context.items() if k != 'media'})
-        question(result)
-        facts = result.get('facts')
-        if not isinstance(facts, list) or not 1 <= len(facts) <= 24:
-            raise ValueError('模型未提炼出可审核的共同事实。')
-        output = []
-        for i, fact in enumerate(facts, 1):
-            source = fact.get('source')
-            quote = fact.get('quote')
-            text = fact.get('text')
-            if not all(isinstance(x, str) and x.strip() for x in (source, quote, text)) or quote not in context['sources'].get(source, ''):
-                raise ValueError('模型给出的事实缺少可核对的逐字原文。')
-            output.append({'id': f'f{i}', 'text': text, 'source': source, 'quote': quote})
-        return output
-
     def batch_outline(self, context, evidence):
         data = {k: v for k, v in context.items() if k not in ('sources', 'media')}
         feedback = ''
         for _ in range(3):
             result = self.ask(
-                '为每条约一分钟的养老机构综合探访选出家属最关心的两到三组核心特点，通常只需三到五条简短事实。'
+                NARRATOR_CONTEXT + '为每条约一分钟的养老机构综合探访选出家属最关心的两到三组核心特点，通常只需三到五条简短事实。'
                 '每项只写一个能在正文里讲清的要点。除非用户特别要求，背景年份、门牌、规模数字和设施清单'
                 '无需列为每条都必须重复的共同事实。每条事实必须完全受其对应原文段落支持，并保留限定词。'
                 '从 evidence 中选择对应编号（如 e1），由程序取原文。如果已有 feedback，按提示修正。'
                 '事实不足时给出具体问题。JSON {"facts":[{"text":"简短事实","evidenceId":"e1"}],"question":null}。',
                 {**data, 'evidence': evidence, 'feedback': feedback})
-            question(result)
             facts = result.get('facts')
             if not isinstance(facts, list) or not 1 <= len(facts) <= 24:
                 feedback = '请在 facts 数组中给出实际可核对的共同事实。'
@@ -154,7 +150,25 @@ class Editor:
                 output.append({'id': f'f{i}', 'text': text.strip(), **evidence[key]})
             if len(output) == len(facts):
                 return output
+        question(result)
         raise ValueError('共同事实提炼未通过原文校验。' + feedback)
+
+    def rebind_fact_references(self, sentences, references, candidate):
+        affected = {str(i):s for i,s in enumerate(sentences,1)
+                    if any(ident not in references for ident in s.get('factIds',[]))}
+        if not affected:return
+        response = self.ask(
+            '只核对这些句子的事实出处，不修改原稿。逐句选能直接支持其中事实及限定词的原文编号。'
+            '只能使用 evidence 中存在的编号。无出处时返回空数组，由后续策划改写。'
+            '返回 {"references":{"句号":["原文编号"]}}，句号必须使用输入的数字键。',
+            {'sentences':{i:s['text'] for i,s in affected.items()},'evidence':references},max_tokens=2500)
+        bindings = response.get('references')
+        if not isinstance(bindings,dict) or bindings.keys()!=affected.keys():
+            raise PlanError('请按现有原文逐句纠正不存在的 factIds。',candidate)
+        for i,values in bindings.items():
+            if not isinstance(values,list) or not values or any(not isinstance(v,str) or v not in references for v in values):
+                raise PlanError(f'第 {i} 句仍缺少可核验的原文引用，请重新选择原文或改写。',candidate)
+        for i,s in affected.items():s['factIds']=list(dict.fromkeys(bindings[i]))
 
     def plan(self, task, index, context, facts, previous, feedback='', *, evidence=None, candidate=None):
         prefs = (task.get('videoPreferences') or [''] * task['count'])[index]
@@ -162,7 +176,7 @@ class Editor:
         revised = task.get('revisedNarration', '')
         evidence = evidence or {}
         result = self.ask(
-            '你负责写一条中文养老机构探访视频。按下列技能规则先写整篇口语稿并做语言润色，再分句选镜和定封面。'
+            NARRATOR_CONTEXT + '你负责写一条中文养老机构探访视频。按下列技能规则先写整篇口语稿并做语言润色，再分句选镜和定封面。'
             '仅使用真实素材，选片基于提供的实看结果。开头和结尾选有运动的源视频；在短片剩余时长足够的区间取镜，'
             '预计每秒 3.5 至 4 个汉字，给足分镜，sourceStart 使用秒数。不要指定资源路径、任何运行设置或关闭审核。'
             '默认不要生成 captions，由现有程序自动分字幕。只有用户明确给定字幕要求时才填写。'
@@ -183,9 +197,9 @@ class Editor:
              'preference': prefs, 'previousAngles': previous, 'feedback': feedback, 'candidate': candidate,
              'revisedNarration': revised, 'publicationOverride': task.get('publicationOverride', {})},
             max_tokens=12000)
-        question(result)
         raw = result.get('plan')
         if not isinstance(raw, dict):
+            question(result)
             raise PlanError('模型必须在顶层 plan 字段返回完整的单条制作计划。')
         if not isinstance(raw.get('institution'), dict):
             raise PlanError('plan.institution 必须填写为对象。')
@@ -223,14 +237,14 @@ class Editor:
                 if not isinstance(plan.get('publication'), dict):
                     raise PlanError('plan.publication 必须填写为对象，以保留用户的发布文案。')
                 plan['publication'][k] = value
-        used = {}
         for number, sentence in enumerate(sentences, 1):
             ids = sentence.get('factIds', [])
             if not isinstance(ids, list) or any(not isinstance(f, str) for f in ids):
                 raise PlanError(f'第 {number} 句的 factIds 必须是编号字符串数组，如 ["f1","f2"]。', result)
             if sentence.get('kind', 'fact') == 'fact' and not ids:
                 raise PlanError(f'第 {number} 句是事实句，factIds 必须引用能支持该句的原文编号。', result)
-            used.update(dict.fromkeys(ids))
+        self.rebind_fact_references(sentences,references,result)
+        used={ident:None for sentence in sentences for ident in sentence.get('factIds',[])}
         authorization = result.get('topicAuthorization') or ''
         if authorization and (not isinstance(authorization, str) or authorization not in task.get('requirements', '') + '\n' + prefs):
             raise PlanError('专题需能引用用户明确提出的要求。')
@@ -258,7 +272,7 @@ class Editor:
 
     def review_plan(self, context, plan, audit):
         response = self.ask(
-            '核对每句口播与事实原文，核对语义及所有限定词。用已有实看素材描述核对文画关系及封面三槽。'
+            NARRATOR_CONTEXT + '核对每句口播与事实原文，核对语义及所有限定词。用已有实看素材描述核对文画关系及封面三槽。'
             '审核口语质量、覆盖范围、结尾咨询、封面及发布文案。材料未支持或文画明显不合时拒绝。'
             'JSON {"ok":true,"note":"具体到口播、事实和素材的审核观察"}。\n' + self.rules('content-review'),
             {**context, 'plan': plan, 'audit': audit})
