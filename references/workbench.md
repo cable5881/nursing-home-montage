@@ -16,6 +16,8 @@ rtk python3 SKILL/scripts/workbench.py --project PROJECT --host local
 
 打开「设置 → 模型与独立制作」。先选平台，工作台会填入支持看图和 JSON 输出的默认模型及官方地址。火山方舟的地址为 `https://ark.cn-beijing.volces.com/api/v3`，模型 ID 可换成方舟接入点 ID。DeepSeek 官方地址为 `https://api.deepseek.com`。填写相应平台的推理 API Key，点「测试模型连接」，然后启用独立制作并保存。连接测试仅发送合成图，生产中的模型用量由所选平台的 Key 对应账号结算。
 
+接入其他服务时，选「自定义 · OpenAI 兼容」，填写该服务的 Base URL、模型 ID 和 API Key。工作台按 OpenAI Chat Completions 格式请求 `/chat/completions`，用 `Authorization: Bearer` 鉴权。远程地址使用 HTTPS，本机服务可用 HTTP。保存的 Key 与该地址绑定，换地址时填写对应的 Key。默认使用 JSON 模式，遇到服务不接受该参数时，可在「高级选项 → JSON 输出方式」选择「用提示词要求 JSON」，再点「测试模型连接」。测试通过说明该模型能识别合成图片并返回工作台可读取的 JSON 对象。
+
 同页可填写和分别测试语音 API Key、数字人 AK/SK 和 TOS。语音测试生成一句短音频，数字人和 TOS 使用查询请求。已有凭据留空即继续使用。使用 OmniHuman 时，如果服务拒绝 tmpfile 域名，可改用已授权的 TOS 桶。
 
 准备好人物照片和已绑定的音色后即可在网页提交。Python 本机服务接单，调用模型完成策划和文画审核，调用配置的媒体服务，最后用本机 FFmpeg 和 Chromium 渲染并输出视频、封面和发布包。模型只接收制作所需的文本和抽帧，无权执行本机命令。浏览器可以关闭，本机服务需继续运行。机器重启后从项目启动器重新打开，已有任务按原检查点恢复。需要补充时，在任务页提交一次答复即可。

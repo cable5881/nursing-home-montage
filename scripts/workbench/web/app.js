@@ -112,6 +112,8 @@ function credentialField(name, label, saved, placeholder) { return `<div class="
 function modelSettings() {
   const model = state.config.model;
   const provider = model.providers[model.provider];
+  const custom = model.providers.custom;
+  const isCustom = model.provider==='custom';
   return `<section class="panel">
     <div class="settings-section-heading"><span>${icon('spark')}</span><div><h2>模型与独立制作</h2>
     <p>用于策划、选片和视觉复核。启用后，本机工作台直接接单。</p></div></div>
@@ -119,13 +121,28 @@ function modelSettings() {
       <div class="form-group"><label class="field-label" for="model-provider">模型平台</label>
       <select id="model-provider" name="model_provider">${Object.entries(model.providers).map(([id,p])=>`<option value="${E(id)}" ${id===model.provider?'selected':''}>${E(p.label)}</option>`).join('')}</select></div>
       <div class="form-group"><label class="field-label" for="model-id">模型 ID</label>
-      <input class="input" id="model-id" name="model_id" value="${E(provider.model)}" spellcheck="false" maxlength="160"></div>
+      <input class="input" id="model-id" name="model_id" value="${E(provider.model)}" placeholder="输入服务提供的模型 ID" spellcheck="false" maxlength="160"></div>
     </div>
-    <p class="form-help">官方地址 <code id="model-url">${E(provider.baseUrl)}</code></p>
+    <p class="form-help" id="model-preset-url" ${isCustom?'hidden':''}>官方地址 <code id="model-url">${E(provider.baseUrl)}</code></p>
+    <div class="form-group" id="model-base-url-fields" ${isCustom?'':'hidden'}>
+      <label class="field-label" for="model-base-url">Base URL</label>
+      <input id="model-base-url" name="model_base_url" class="input" type="url" spellcheck="false" maxlength="1024"
+        value="${E(custom?.baseUrl || '')}" placeholder="例如 https://api.example.com/v1" ${isCustom?'':'disabled'}>
+      <p class="form-help">填服务商给的接口地址。工作台会自动补上 /chat/completions。</p>
+    </div>
     <div class="form-group"><label class="field-label" for="model-key">模型 API Key</label>
       <input id="model-key" name="model_key" class="input" type="password" autocomplete="new-password" maxlength="512"
         placeholder="${provider.configured?'已配置 · 留空保留原值':'粘贴所选平台的推理 API Key'}">
     </div>
+    <details class="form-group" id="model-advanced" ${isCustom?'':'hidden'}>
+      <summary class="field-label">高级选项</summary>
+      <p class="form-help">鉴权方式为 Bearer API Key。如果服务不支持 JSON 模式，可以改用提示词。</p>
+      <fieldset class="form-group">
+        <legend class="field-label">JSON 输出方式</legend>
+        <label><input type="radio" name="model_output_mode" value="json" ${custom?.outputMode==='prompt'?'':'checked'}> JSON 模式（默认）</label>
+        <label><input type="radio" name="model_output_mode" value="prompt" ${custom?.outputMode==='prompt'?'checked':''}> 用提示词要求 JSON</label>
+      </fieldset>
+    </details>
     <div class="switch-row"><label for="model-enabled">启用独立制作</label><input id="model-enabled" name="model_enabled" class="switch" type="checkbox" ${model.enabled?'checked':''} ${model.canEnable?'':'disabled'}></div>
     ${model.canEnable?'':'<p class="form-help">启用前请用项目启动器独立打开工作台。</p>'}
     <p class="form-help">独立制作会向所选平台发送必要的机构说明和审核抽帧。连接测试只发送一张合成色块图。</p>
@@ -138,6 +155,7 @@ function serviceTestControl(kind,label,detail='') {
 }
 function modelFields(form) {
   return {provider:form.elements.model_provider.value,model:form.elements.model_id.value,
+          baseUrl:form.elements.model_base_url.value,outputMode:form.elements.model_output_mode.value,
           apiKey:form.elements.model_key.value,enabled:form.elements.model_enabled.checked};
 }
 function bindServiceSettings(form) {
@@ -152,25 +170,41 @@ function bindServiceSettings(form) {
   $('#key-sk').closest('.form-row').insertAdjacentHTML('afterend',
     serviceTestControl('avatar','测试数字人连接','只验证任务查询权限。'));
   $('#tos-fields').insertAdjacentHTML('beforeend',serviceTestControl('storage','测试 TOS 存储桶','检查存储桶访问权限。'));
+  const testResult=$('#test-model-result');
+  const setKeyHint=()=>{
+    const fields=modelFields(form), selected=model.providers[fields.provider];
+    const sameAddress=fields.provider!=='custom'||fields.baseUrl.trim().replace(/\/+$/,'').replace(/\/chat\/completions$/,'')===selected.baseUrl;
+    form.elements.model_key.placeholder=selected.configured&&sameAddress?'已配置 · 留空保留原值':'粘贴当前地址的推理 API Key';
+  };
   form.elements.model_provider.addEventListener('change',e=>{
-    const p=model.providers[e.target.value];
+    const p=model.providers[e.target.value], isCustom=e.target.value==='custom';
     form.elements.model_id.value=p.model;
     form.elements.model_key.value='';
-    form.elements.model_key.placeholder=p.configured?'已配置 · 留空保留原值':'粘贴所选平台的推理 API Key';
     $('#model-url').textContent=p.baseUrl;
-    $('#test-model-result').textContent='';
+    $('#model-preset-url').hidden=isCustom;
+    $('#model-base-url-fields').hidden=!isCustom;
+    $('#model-advanced').hidden=!isCustom;
+    form.elements.model_base_url.disabled=!isCustom;
+    setKeyHint();
+    testResult.textContent='';
+  });
+  form.addEventListener('input',e=>{
+    if(!['model_base_url','model_id','model_key','model_output_mode'].includes(e.target.name))return;
+    setKeyHint();
+    testResult.textContent='';
   });
   form.querySelectorAll('[data-test-service]').forEach(button=>button.addEventListener('click',()=>{
     const kind=button.dataset.testService,status=$('#test-'+kind+'-result');
+    const payload=kind==='model'?modelFields(form):{kind,person:$('#test-person').value,
+      connection:Object.fromEntries(['api_key','ak','sk','bucket','region','endpoint'].map(name=>[name,form.elements[name].value]))};
+    const isCurrent=()=>form.isConnected&&(kind!=='model'||JSON.stringify(modelFields(form))===JSON.stringify(payload));
     status.className='form-help';
     status.textContent='正在测试…';
     return busy(button,async()=>{
       try {
-        const payload=kind==='model'?modelFields(form):{kind,person:$('#test-person').value,
-          connection:Object.fromEntries(['api_key','ak','sk','bucket','region','endpoint'].map(name=>[name,form.elements[name].value]))};
         const result=await api(kind==='model'?'/api/model/test':'/api/services/test',payload);
-        status.className='saved-mark';status.textContent=result.message;
-      } catch(err) {status.className='inline-error';status.textContent=err.message;}
+        if(isCurrent()){status.className='saved-mark';status.textContent=result.message;}
+      } catch(err) {if(isCurrent()){status.className='inline-error';status.textContent=err.message;}}
     });
   }));
 }
