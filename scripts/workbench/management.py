@@ -197,7 +197,12 @@ class Management:
         return {'field':field,'value':value}
 
     def dispatch(self, action, values):
-        if action == 'credential': return self.reveal_credential(values.get('field'))
+        if action == 'credential':
+            field = values.get('field')
+            if field == 'model_key':
+                value = self.app.models.reveal_key(values.get('provider'), values.get('baseUrl'))
+                return {'field': field, 'value': value}
+            return self.reveal_credential(field)
         if action == 'preview': return self.preview(values)
         if action == 'delete': return self.delete(values.get('token'))
         if action == 'retry-delete':

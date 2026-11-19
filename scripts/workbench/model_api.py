@@ -170,6 +170,14 @@ class ModelSettings:
             return value['key'] if value and value['baseUrl'] == base_url else ''
         return (value or os.environ.get(provider(name)['env'], '')).strip()
 
+    def reveal_key(self, name, base_url):
+        config = provider(name)
+        address = custom_base_url(base_url) if name == 'custom' else config['baseUrl']
+        value = self.key(name, address)
+        if not value:
+            raise ValueError('这个模型平台或地址还没有保存 API Key。')
+        return value
+
     def public(self):
         saved = self.stored()
         providers = {}

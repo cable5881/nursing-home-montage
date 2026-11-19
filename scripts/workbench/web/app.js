@@ -108,7 +108,19 @@ function bindCreate() {
   });
   $('#person-select').addEventListener('change', () => { const person = state.config.people.find(p => p.id === f.elements.person.value); const img = $('#selected-portrait'); if (img && person?.hasPortrait) {img.src = '/media/person/' + person.id; img.alt = person.name;} });
 }
-function credentialField(name, label, saved, placeholder) { return `<div class="form-group"><div class="label-row"><label for="key-${name}">${label}</label>${saved ? `<span class="saved-mark">${icon('check')} 已保存</span>` : badge('待填写','warn')}</div><div class="input-wrap"><input id="key-${name}" class="input" name="${name}" type="password" autocomplete="new-password" spellcheck="false" placeholder="${saved ? '已配置 · 留空保留原值' : placeholder}"><button type="button" class="reveal" data-action="reveal" aria-label="显示${label}" aria-pressed="false">${icon('eye')}</button></div></div>`; }
+function credentialStatus(saved) {
+  return saved ? `<span class="saved-mark">${icon('check')} 已保存</span>` : badge('待填写','warn');
+}
+function credentialField(name, label, saved, placeholder, maxLength) {
+  return `<div class="form-group">
+    <div class="label-row"><label for="key-${name}">${label}</label>${credentialStatus(saved)}</div>
+    <div class="input-wrap">
+      <input id="key-${name}" class="input" name="${name}" type="password" autocomplete="new-password" spellcheck="false"
+        ${maxLength?`maxlength="${maxLength}"`:''} placeholder="${saved ? '已配置 · 留空保留原值' : placeholder}">
+      <button type="button" class="reveal" data-action="reveal" aria-label="显示${label}" aria-pressed="false">${icon('eye')}</button>
+    </div>
+  </div>`;
+}
 function modelSettings() {
   const model = state.config.model;
   const provider = model.providers[model.provider];
@@ -130,10 +142,7 @@ function modelSettings() {
         value="${E(custom?.baseUrl || '')}" placeholder="例如 https://api.example.com/v1" ${isCustom?'':'disabled'}>
       <p class="form-help">填服务商给的接口地址。工作台会自动补上 /chat/completions。</p>
     </div>
-    <div class="form-group"><label class="field-label" for="model-key">模型 API Key</label>
-      <input id="model-key" name="model_key" class="input" type="password" autocomplete="new-password" maxlength="512"
-        placeholder="${provider.configured?'已配置 · 留空保留原值':'粘贴所选平台的推理 API Key'}">
-    </div>
+    ${credentialField('model_key','模型 API Key',provider.configured,'粘贴当前地址的推理 API Key',512)}
     <details class="form-group" id="model-advanced" ${isCustom?'':'hidden'}>
       <summary class="field-label">高级选项</summary>
       <p class="form-help">鉴权方式为 Bearer API Key。如果服务不支持 JSON 模式，可以改用提示词。</p>
@@ -171,15 +180,26 @@ function bindServiceSettings(form) {
     serviceTestControl('avatar','测试数字人连接','只验证任务查询权限。'));
   $('#tos-fields').insertAdjacentHTML('beforeend',serviceTestControl('storage','测试 TOS 存储桶','检查存储桶访问权限。'));
   const testResult=$('#test-model-result');
+  const modelKey=form.elements.model_key;
+  const keyButton=modelKey.parentElement.querySelector('.reveal');
+  const resetKeyReveal=()=>{
+    hideStoredCredential(keyButton);
+    modelKey.type='password';
+    setCredentialButton(keyButton,'模型 API Key',false);
+  };
   const setKeyHint=()=>{
     const fields=modelFields(form), selected=model.providers[fields.provider];
     const sameAddress=fields.provider!=='custom'||fields.baseUrl.trim().replace(/\/+$/,'').replace(/\/chat\/completions$/,'')===selected.baseUrl;
-    form.elements.model_key.placeholder=selected.configured&&sameAddress?'已配置 · 留空保留原值':'粘贴当前地址的推理 API Key';
+    const saved=selected.configured&&sameAddress;
+    const status=modelKey.closest('.form-group').querySelector('.label-row > span');
+    if(status.classList.contains('saved-mark')!==saved)status.outerHTML=credentialStatus(saved);
+    modelKey.placeholder=saved?'已配置 · 留空保留原值':'粘贴当前地址的推理 API Key';
   };
   form.elements.model_provider.addEventListener('change',e=>{
     const p=model.providers[e.target.value], isCustom=e.target.value==='custom';
+    resetKeyReveal();
     form.elements.model_id.value=p.model;
-    form.elements.model_key.value='';
+    modelKey.value='';
     $('#model-url').textContent=p.baseUrl;
     $('#model-preset-url').hidden=isCustom;
     $('#model-base-url-fields').hidden=!isCustom;
@@ -190,6 +210,7 @@ function bindServiceSettings(form) {
   });
   form.addEventListener('input',e=>{
     if(!['model_base_url','model_id','model_key','model_output_mode'].includes(e.target.name))return;
+    if(e.target.name==='model_base_url')resetKeyReveal();
     setKeyHint();
     testResult.textContent='';
   });

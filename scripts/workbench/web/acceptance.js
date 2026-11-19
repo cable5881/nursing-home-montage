@@ -161,23 +161,35 @@ setInterval(()=>{if(!document.hidden)updateLiveClock();},1000);
 // Saved credentials are fetched only on an explicit reveal click.
 // The temporary read-only display has no name and is never part of FormData.
 const revealedCredentials=new Map();
+function setCredentialButton(button,label,show){
+  button.setAttribute('aria-pressed',String(show));button.setAttribute('aria-label',(show?'隐藏':'显示')+label);
+}
 function hideStoredCredential(button){
   const record=revealedCredentials.get(button);if(!record)return;
   clearTimeout(record.timer);record.display.value='';record.display.remove();record.input.hidden=false;
-  button.setAttribute('aria-pressed','false');button.setAttribute('aria-label','显示'+record.label);revealedCredentials.delete(button);
+  setCredentialButton(button,record.label,false);revealedCredentials.delete(button);
 }
 function hideAllStoredCredentials(){for(const button of revealedCredentials.keys())hideStoredCredential(button);}
+function credentialRequest(input){
+  const payload={field:input.name};
+  if(input.name==='model_key'){
+    payload.provider=input.form.elements.model_provider.value;
+    if(payload.provider==='custom')payload.baseUrl=input.form.elements.model_base_url.value;
+  }
+  return payload;
+}
 async function toggleCredentialVisibility(button){
   if(revealedCredentials.has(button)){hideStoredCredential(button);return;}
   const input=button.parentElement.querySelector('input[name]');if(!input)return;
   const label=input.closest('.form-group')?.querySelector('label')?.textContent||input.name;
-  if(input.value){const show=input.type==='password';input.type=show?'text':'password';button.setAttribute('aria-pressed',String(show));button.setAttribute('aria-label',(show?'隐藏':'显示')+label);return;}
+  if(input.value){const show=input.type==='password';input.type=show?'text':'password';setCredentialButton(button,label,show);return;}
   if(!input.closest('.form-group').querySelector('.saved-mark')){notify('请先填写这项凭据');return;}
+  const payload=credentialRequest(input);
   await busy(button,async()=>{try{
-    const result=await manageRequest('credential',{field:input.name});
-    if(!input.isConnected||route!=='settings'||document.hidden)return;
+    const result=await manageRequest('credential',payload);
+    if(!input.isConnected||route!=='settings'||document.hidden||input.value||JSON.stringify(payload)!==JSON.stringify(credentialRequest(input)))return;
     const display=document.createElement('input');display.className='input credential-readonly';display.type='text';display.readOnly=true;display.autocomplete='off';display.spellcheck=false;display.setAttribute('aria-label','已保存的'+label+'（只读）');display.value=result.value;
-    input.hidden=true;input.after(display);button.setAttribute('aria-pressed','true');button.setAttribute('aria-label','隐藏'+label);
+    input.hidden=true;input.after(display);setCredentialButton(button,label,true);
     revealedCredentials.set(button,{input,display,label,timer:setTimeout(()=>hideStoredCredential(button),30000)});
   }catch(err){notify(err.message,true);}});
 }
