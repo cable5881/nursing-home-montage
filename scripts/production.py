@@ -1,16 +1,26 @@
 from pathlib import Path
 from html.parser import HTMLParser
 import json,sys,os
+from tempfile import TemporaryDirectory
 from workflow import *
 from build_job import compose
 
 
 def cache_avatar(job,key,record):
     from shared_cache import SharedCache
-    files={'video':record['video'],'alignment':record['alignment']}
+    files={'video':record['video']}
     files.update({'frame-'+str(i):p for i,p in enumerate(record['visualReviewFrames'])})
     metadata={k:record[k] for k in ('taskId','driverPcmSha256','videoSha256')}
-    SharedCache(project_root()).store_files('avatar',key,files,metadata,owner=job)
+    shared=SharedCache(project_root())
+    alignment=record['alignment']
+    if isinstance(alignment,dict):
+        # Jobs from older engines saved the timing object inline.
+        with TemporaryDirectory(prefix='avatar-alignment-') as temporary:
+            path=Path(temporary)/'alignment.json'
+            write(path,alignment)
+            shared.store_files('avatar',key,{**files,'alignment':path},metadata,owner=job)
+    else:
+        shared.store_files('avatar',key,{**files,'alignment':alignment},metadata,owner=job)
 
 def restore_avatar(job,key,folder):
     from shared_cache import SharedCache
@@ -25,7 +35,7 @@ def restore_avatar(job,key,folder):
             'visualReviewPending':True,'reusedVerifiedGeneration':True}
 
 def avatars(job,wait_seconds=45):
-    setup(job);cfg=settings(job);pending=[];completed=[]
+    setup(job);cfg=settings(job);pending=[];completed=[];cache_warnings=[]
     from preflight import require_preflight
     require_preflight(job)
     for a in read(job/'avatars.json'):
@@ -64,10 +74,24 @@ def avatars(job,wait_seconds=45):
             # One bounded cloud wait per command. Resume never creates another task for this id.
             break
         if r.returncode:raise RuntimeError(r.stdout[-2200:]+r.stderr[-1200:])
-        s=read(run_dir/'run.json');v=s['verification'];record={'cacheKey':key,'video':v['output'],'videoSha256':v['sha256'],'taskId':s['task_id'],'run':str(run_dir),'alignment':v['alignment'],'driverPcmSha256':pcm_sha(audio),'visualReviewFrames':v['visual_review_frames'],'visualReviewPending':True}
-        write(record_path,record);write(cache,record);cache_avatar(job,key,record);completed.append(a['id'])
+        s=read(run_dir/'run.json');v=s['verification']
+        alignment=v['alignment']
+        if isinstance(alignment,dict):
+            path=run_dir/'alignment.json'
+            if not path.is_file():
+                # Some adapters return the verified timing only in run.json.
+                write(path,alignment)
+            alignment=str(path)
+        record={'cacheKey':key,'video':v['output'],'videoSha256':v['sha256'],'taskId':s['task_id'],'run':str(run_dir),'alignment':str(alignment),'driverPcmSha256':pcm_sha(audio),'visualReviewFrames':v['visual_review_frames'],'visualReviewPending':True}
+        write(record_path,record)
+        try:
+            cache_avatar(job,key,record)
+            write(cache,record)
+        except OSError:
+            cache_warnings.append(a['id'])
+        completed.append(a['id'])
     state(job,phase='avatars_pending' if pending else 'avatars_ready',pending=pending,next='avatars' if pending else 'Inspect provider frames, then cutouts')
-    return {'completed':completed,'pending':pending}
+    return {'completed':completed,'pending':pending,**({'cacheWarnings':cache_warnings} if cache_warnings else {})}
 
 def cutouts(job):
     results=[]
@@ -111,7 +135,7 @@ def review_provider(job,frames,note):
         if not known.issubset(set(selected)):raise ValueError('每个数字人的原片首、中、尾检查帧都需查看并记录：'+a['id'])
         if sha(record['video'])!=record['videoSha256']:raise ValueError('原片已变化，需重新核验。')
         record.update(visualReviewPending=False,visualReview={'frames':selected,'note':note,'sha256':record['videoSha256']})
-        write(path,record);write(project_root()/'作品/.montage-cache/avatar'/f'{record["cacheKey"]}.json',record)
+        write(path,record)
     return {'providerReviewRecorded':True}
 
 def carve(job):
