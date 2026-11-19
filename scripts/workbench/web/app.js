@@ -56,7 +56,7 @@ function updateChrome() {
   $('#setup-dot').hidden = allConfigured();
   const a = c.agent;
   $('#agent-dot').className = 'status-dot' + (a.uncertain ? ' muted' : a.state === 'connected' ? '' : a.state === 'error' ? ' error' : ' muted');
-  $('#agent-status').textContent = a.uncertain ? '等待进度回传' : a.state === 'connected' ? a.label+' 已连接' : a.state === 'checking' ? '正在连接 Agent…' : a.state === 'error' ? 'Agent 待连接' : '连接 '+a.label;
+  $('#agent-status').textContent = a.mode==='local' ? (a.canDispatch?'独立制作已启用':'独立制作待启用') : a.uncertain ? '等待进度回传' : a.state === 'connected' ? a.label+' 已连接' : a.state === 'checking' ? '正在连接 Agent…' : a.state === 'error' ? 'Agent 待连接' : '连接 '+a.label;
   document.querySelectorAll('[data-nav]').forEach(a => { if (a.dataset.nav === (route==='task'?'tasks':['preview','video'].includes(route)?'works':['institution','asset','institution-new'].includes(route)?'library':route)) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
   $('#page-label').textContent = route==='settings'&&location.hash==='#settings/music'?'配乐管理':labels[route] || labels.create;
 }
@@ -109,20 +109,92 @@ function bindCreate() {
   $('#person-select').addEventListener('change', () => { const person = state.config.people.find(p => p.id === f.elements.person.value); const img = $('#selected-portrait'); if (img && person?.hasPortrait) {img.src = '/media/person/' + person.id; img.alt = person.name;} });
 }
 function credentialField(name, label, saved, placeholder) { return `<div class="form-group"><div class="label-row"><label for="key-${name}">${label}</label>${saved ? `<span class="saved-mark">${icon('check')} 已保存</span>` : badge('待填写','warn')}</div><div class="input-wrap"><input id="key-${name}" class="input" name="${name}" type="password" autocomplete="new-password" spellcheck="false" placeholder="${saved ? '已配置 · 留空保留原值' : placeholder}"><button type="button" class="reveal" data-action="reveal" aria-label="显示${label}" aria-pressed="false">${icon('eye')}</button></div></div>`; }
+function modelSettings() {
+  const model = state.config.model;
+  const provider = model.providers[model.provider];
+  return `<section class="panel">
+    <div class="settings-section-heading"><span>${icon('spark')}</span><div><h2>模型与独立制作</h2>
+    <p>用于策划、选片和视觉复核。启用后，本机工作台直接接单。</p></div></div>
+    <div class="form-row">
+      <div class="form-group"><label class="field-label" for="model-provider">模型平台</label>
+      <select id="model-provider" name="model_provider">${Object.entries(model.providers).map(([id,p])=>`<option value="${E(id)}" ${id===model.provider?'selected':''}>${E(p.label)}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="field-label" for="model-id">模型 ID</label>
+      <input class="input" id="model-id" name="model_id" value="${E(provider.model)}" spellcheck="false" maxlength="160"></div>
+    </div>
+    <p class="form-help">官方地址 <code id="model-url">${E(provider.baseUrl)}</code></p>
+    <div class="form-group"><label class="field-label" for="model-key">模型 API Key</label>
+      <input id="model-key" name="model_key" class="input" type="password" autocomplete="new-password" maxlength="512"
+        placeholder="${provider.configured?'已配置 · 留空保留原值':'粘贴所选平台的推理 API Key'}">
+    </div>
+    <div class="switch-row"><label for="model-enabled">启用独立制作</label><input id="model-enabled" name="model_enabled" class="switch" type="checkbox" ${model.enabled?'checked':''} ${model.canEnable?'':'disabled'}></div>
+    ${model.canEnable?'':'<p class="form-help">启用前请用项目启动器独立打开工作台。</p>'}
+    <p class="form-help">独立制作会向所选平台发送必要的机构说明和审核抽帧。连接测试只发送一张合成色块图。</p>
+    ${serviceTestControl('model','测试模型连接')}
+  </section>`;
+}
+function serviceTestControl(kind,label,detail='') {
+  return `<div class="form-group"><button type="button" class="secondary" data-test-service="${kind}">${label}</button>
+    ${detail?`<p class="form-help">${detail}</p>`:''}<p class="form-help" role="status" id="test-${kind}-result"></p></div>`;
+}
+function modelFields(form) {
+  return {provider:form.elements.model_provider.value,model:form.elements.model_id.value,
+          apiKey:form.elements.model_key.value,enabled:form.elements.model_enabled.checked};
+}
+function bindServiceSettings(form) {
+  const model = state.config.model;
+  if (!model) return;
+  form.insertAdjacentHTML('afterbegin',modelSettings());
+  const people = state.config.people.filter(p=>p.ready);
+  $('#key-api_key').closest('.form-group').insertAdjacentHTML('afterend',
+    `<div class="form-group"><label class="field-label" for="test-person">测试音色</label><select id="test-person">
+    ${people.map(p=>`<option value="${E(p.id)}" ${p.isDefault?'selected':''}>${E(p.name)}</option>`).join('')}</select></div>
+    ${serviceTestControl('speech','测试语音连接','用所选音色合成四字短句，按语音平台规则计费。')}`);
+  $('#key-sk').closest('.form-row').insertAdjacentHTML('afterend',
+    serviceTestControl('avatar','测试数字人连接','只验证任务查询权限。'));
+  $('#tos-fields').insertAdjacentHTML('beforeend',serviceTestControl('storage','测试 TOS 存储桶','检查存储桶访问权限。'));
+  form.elements.model_provider.addEventListener('change',e=>{
+    const p=model.providers[e.target.value];
+    form.elements.model_id.value=p.model;
+    form.elements.model_key.value='';
+    form.elements.model_key.placeholder=p.configured?'已配置 · 留空保留原值':'粘贴所选平台的推理 API Key';
+    $('#model-url').textContent=p.baseUrl;
+    $('#test-model-result').textContent='';
+  });
+  form.querySelectorAll('[data-test-service]').forEach(button=>button.addEventListener('click',()=>{
+    const kind=button.dataset.testService,status=$('#test-'+kind+'-result');
+    status.className='form-help';
+    status.textContent='正在测试…';
+    return busy(button,async()=>{
+      try {
+        const payload=kind==='model'?modelFields(form):{kind,person:$('#test-person').value,
+          connection:Object.fromEntries(['api_key','ak','sk','bucket','region','endpoint'].map(name=>[name,form.elements[name].value]))};
+        const result=await api(kind==='model'?'/api/model/test':'/api/services/test',payload);
+        status.className='saved-mark';status.textContent=result.message;
+      } catch(err) {status.className='inline-error';status.textContent=err.message;}
+    });
+  }));
+}
 function renderSettings() {
   const c = state.config, conn = c.connection;
   main.innerHTML = `${heading('先准备好，以后就简单了。','服务与数字人只需配置一次。设置保存在你的本地项目。')}<div class="settings-layout"><form class="settings-stack" id="settings-form"><section class="panel"><div class="settings-section-heading"><span>1</span><div><h2>连接语音与数字人服务</h2><p>使用火山引擎语音与 OmniHuman 2.0，所有数字人共用这套连接。</p></div></div><div class="settings-links"><a href="https://console.volcengine.com/speech/app" target="_blank" rel="noreferrer">获取语音 API Key ${icon('arrow-up-right')}</a><a href="https://console.volcengine.com/iam/keymanage/" target="_blank" rel="noreferrer">获取视频 AK / SK ${icon('arrow-up-right')}</a></div>${credentialField('api_key','语音 API Key',conn.speech,'填写语音服务的 API Key')}<div class="form-row">${credentialField('ak','Access Key ID',conn.ak,'填写 Access Key ID')}${credentialField('sk','Secret Access Key',conn.sk,'填写 Secret Access Key')}</div><p class="form-help">语音 Key 与视频 AK / SK 来自不同服务。已保存标记表示本地配置完整，实际服务权限会在制作预检时检查。</p></section><section class="panel"><div class="settings-section-heading"><span>2</span><div><h2>文件中转与声音复刻</h2><p>推荐保留默认中转方式，不用额外申请存储服务。</p></div></div><div class="form-group"><label class="field-label" for="storage-provider" style="margin-bottom:10px">音频文件中转</label><select id="storage-provider" name="storage_provider"><option value="tmpfile" ${conn.storage.provider === 'tmpfile' ? 'selected' : ''}>tmpfile · 无需账号和 Key</option><option value="tos" ${conn.storage.provider === 'tos' ? 'selected' : ''}>TOS · 使用自己的存储桶</option></select></div><div id="tos-fields" ${conn.storage.provider !== 'tos' ? 'hidden' : ''}><div class="form-group"><label class="field-label" for="bucket">存储桶名称</label><input class="input" name="bucket" id="bucket" value="${E(conn.storage.bucket || '')}"></div><div class="form-row"><div class="form-group"><label class="field-label" for="region">区域</label><input class="input" name="region" id="region" placeholder="cn-beijing" value="${E(conn.storage.region || '')}"></div><div class="form-group"><label class="field-label" for="endpoint">Endpoint</label><input class="input" name="endpoint" id="endpoint" placeholder="tos-cn-beijing.volces.com" value="${E(conn.storage.endpoint || '')}"></div></div></div><p class="form-help" id="tmpfile-note" ${conn.storage.provider === 'tos' ? 'hidden' : ''}>tmpfile 用于向数字人服务传递音频。持有链接者可下载，文件 7 天后自动删除。</p><div class="form-group" style="margin-top:24px"><label class="field-label" for="clone-mode" style="margin-bottom:10px">新增声音时的复刻方式</label><select name="clone_mode" id="clone-mode"><option value="">以后再选 · 已绑定音色不受影响</option><option value="prepaid" ${conn.cloneMode === 'prepaid' ? 'selected' : ''}>使用已有预付费音色槽位</option><option value="postpaid" ${conn.cloneMode === 'postpaid' ? 'selected' : ''}>创建后付费音色 · 首次正式合成产生槽位费</option></select></div><div class="form-group"><label class="field-label" for="speaker-pool" style="margin-bottom:10px">空闲音色槽位<span class="optional">预付费模式填写</span></label><input class="input" name="speaker_pool" id="speaker-pool" value="${E(conn.speakerPool.join(', '))}" placeholder="多个音色 ID 用逗号分隔"></div></section><section class="panel"><div class="settings-section-heading"><span>3</span><div><h2>让 Agent 接手制作</h2><p>使用电脑上已安装的 Agent 与 skill，不需要再配一套大模型 Key。</p></div></div><div id="agent-config-status">${agentStatusBlock()}</div><p class="inline-note">首次连接时，把下方的连接指令发送给 Agent。保持这个 Agent 对话运行，之后页面负责提交任务和显示进度。</p></section><section class="panel"><div class="settings-section-heading"><span>${icon('settings')}</span><div><h2>你的制作偏好</h2><p>这些设置将用于之后创建的新任务。</p></div></div><div class="form-group"><label class="field-label" for="cover-header" style="margin-bottom:10px">封面固定头标</label><input class="input" name="coverHeader" id="cover-header" value="${E(c.preferences.coverHeader)}" placeholder="例如：重庆养老院探访"></div><div class="switch-row"><label for="default-music">${icon('music')} 默认添加背景音乐</label><input type="checkbox" class="switch" id="default-music" name="music" ${c.preferences.music ? 'checked' : ''}></div></section><div class="sticky-actions"><button class="primary" type="submit">${icon('save')} 保存本地设置</button><button class="secondary" type="submit" data-next="people">下一步：配置数字人 ${icon('arrow-right')}</button><span id="settings-error" class="inline-error error-slot" role="alert"></span></div></form><aside class="settings-guide"><h3>第一次使用，跟着做就好。</h3><ol><li><strong>开通服务，填好 Key</strong>到火山引擎控制台获取语音 Key 和视频 AK / SK，填入左侧表单。</li><li><strong>添加你自己的数字人</strong>准备一张正面照片，绑定已有音色；也可以提供录音，让 Agent 完成声音复刻。</li><li><strong>选择机构素材，开始制作</strong>放入实拍视频和真实介绍，写下这条视频的想法。</li></ol><p>留空的 Key 会保留原配置。保存后输入框自动清空，页面只显示是否已配置。</p><div class="path-note">当前项目<br>${E(c.project)}<p style="margin-top:10px">配置位于项目的 .montage 目录，更新 skill 后仍会保留。</p></div></aside></div>`;
   $('#storage-provider').addEventListener('change', e => { $('#tos-fields').hidden = e.target.value !== 'tos'; $('#tmpfile-note').hidden = e.target.value === 'tos'; });
+  if(c.agent.mode==='local'){
+    $('#agent-config-status').closest('section').hidden=true;
+    const guide=$('.settings-guide ol');
+    guide.firstElementChild.innerHTML='<strong>选平台，填 API Key</strong>先测试模型，再测试已有的语音和数字人配置。';
+  }
+  bindServiceSettings($('#settings-form'));
   $('#settings-form').addEventListener('submit', async e => {
     e.preventDefault(); const next = e.submitter?.dataset.next; const form = e.target, data = Object.fromEntries(new FormData(form)); $('#settings-error').textContent = '';
     await busy(form.querySelector('[type=submit]'), async () => {
-      try { await api('/api/config', {connection:data, preferences:{coverHeader:data.coverHeader, music:form.elements.music.checked}}); await refresh(false); if(next)setRoute(next); else renderSettings(); notify('设置已保存到本地项目'); }
+      try { await api('/api/config', {connection:data, model:state.config.model?modelFields(form):undefined, preferences:{coverHeader:data.coverHeader, music:form.elements.music.checked}}); await refresh(false); if(next)setRoute(next); else renderSettings(); notify('设置已保存到本地项目'); }
       catch (err) { $('#settings-error').textContent = err.message; }
     });
   });
 }
 function agentStatusBlock() {
   const a = state.config.agent;
+  if(a.mode==='local')return `<div class="agent-status-box"><span>${icon('clapper')}</span><div><strong>本地独立制作</strong><p>${E(a.message)}</p></div></div>`;
   return `<div class="agent-status-box"><span>${icon('clapper')}</span><div><strong>${a.uncertain ? '等待进度回传' : a.state === 'connected' ? a.label+' 已连接' : a.installed ? '已检测到 Agent' : '等待宿主连接'}</strong><p>${E(a.message)}</p></div><button type="button" class="secondary" data-action="check-agent">${icon('retry')}检查连接</button></div>${a.probe==='passed' ? '<p class="saved-mark">网页提交 → Agent 接收 → 回传进度，连接自检已通过。</p>' : ['pending','claimed'].includes(a.probe) ? '<p class="form-help">连接自检中，正在等待 Agent 回传…</p>' : ''}${a.state !== 'connected' ? `<div class="inline-note"><strong>只需在 Agent 发送一次这句话</strong><p style="margin:8px 0 12px">${E(a.instruction)}</p><button type="button" class="secondary" data-action="copy-agent">复制连接指令 ${icon('text')}</button> ${a.host==='workbuddy'?`<button type="button" class="text-button" data-action="open-workbuddy">打开 WorkBuddy ${icon('arrow-up-right')}</button>`:''}<p style="margin:10px 0 0">Agent 接上后，这里自动变为已连接。之后直接在网页点“开始制作”。</p></div>` : ''}`;
 }
 function renderPeople() {

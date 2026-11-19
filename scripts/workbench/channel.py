@@ -62,6 +62,8 @@ class AgentChannel:
         if op=='connect': return self.connect(request)
         if op=='poll':
             self.authorize(request)
+            if self.app.models.enabled():
+                return {'state':'waiting','instruction':'此工作台已启用独立制作，由本机程序接单。'}
             self.write(self.app.data/'agent-connection.json',{'state':'waiting','seen':time.time(),'transport':'native-files'})
             self.write(self.app.data/'connection-request.json',{'status':'connected','updated':time.time()})
             head=self.app.queue.head()
@@ -90,6 +92,7 @@ class AgentChannel:
             self.authorize(request)
             with self.app.transaction():
                 data,row=self.app.queue.checked(ident,lease)
+                if row.get('localExecution'):raise ValueError('本条由本机独立执行')
                 agent=request.get('agentId')
                 if not isinstance(agent,str) or not 1<=len(agent)<=180:raise ValueError('必须提供真实原生 Agent 标识')
                 if row.get('platformAgentId') and row['platformAgentId']!=agent:raise ValueError('本条已经绑定其他原生执行者')
@@ -127,11 +130,12 @@ class AgentChannel:
         thread=self.active.get(ident)
         if thread and thread.is_alive():return True
         row=self.app.queue.item(ident)
-        record=self.read(Path(row['job'])/'pipeline-process.json',{})
-        if record.get('state')=='running':
-            try:os.kill(record['pid'],0)
-            except ProcessLookupError:pass
-            else:return True
+        for folder in (Path(row['job']),self.app.data/'queue-workers'/ident):
+            record=self.read(folder/'pipeline-process.json',{})
+            if record.get('state')=='running':
+                try:os.kill(record['pid'],0)
+                except ProcessLookupError:pass
+                else:return True
         return False
 
     def execution_restored(self, ident):
@@ -171,16 +175,13 @@ class AgentChannel:
                 else:folder,_=self.app.planning.initialize(task)
                 if action in ('prepare-planning','prepare-video'):
                     # Inventory has a different CLI signature; no caller-controlled command.
-                    import subprocess,shutil
-                    args=runner.command(self.app.skill/'scripts/montage.py','inventory',task['source'],'--out',folder)
+                    args=['inventory',task['source'],'--out',folder]
                     if action=='prepare-video' and task.get('kind')=='revision' and not task.get('revisionFromArchive'):
                         plan=self.app.data/'queue-workers'/row['id']/'revised-plan.json'
                         if not plan.is_file():raise ValueError('请先写 revised-plan.json，再准备单条重做')
-                        args=runner.command(self.app.skill/'scripts/montage.py','revise',task['baseJob'],'--out',folder,'--plan',plan)
-                    if shutil.which('rtk'): args=['rtk','proxy',*args]
-                    p=subprocess.run(args,cwd=self.app.project,env={**os.environ,'MONTAGE_PROJECT_ROOT':str(self.app.project)},capture_output=True,text=True,timeout=600)
-                    if p.returncode: raise ValueError(self.app.redact(p.stderr[-1500:]+'\n'+p.stdout[-1500:]))
-                    result=json.loads(p.stdout)
+                        args=['revise',task['baseJob'],'--out',folder,'--plan',plan]
+                    code,result=runner.invoke(row,lease,args[0],job=folder,cli_args=args)
+                    if code: raise ValueError(str(result))
                     result['userFactsSource']=self.app.planning.append_facts(task,folder)
                 else:
                     def validate(job):

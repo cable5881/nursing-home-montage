@@ -45,19 +45,20 @@ def write_shortcut(project):
     target.chmod(0o700)
 
 
-def launch(project, no_open=False, managed=False):
+def launch(project, no_open=False, managed=False, independent=False):
     project=Path(project).resolve()
     project.mkdir(parents=True,exist_ok=True)
     write_shortcut(project)
     with launch_lock(project):
-        return _launch(project,no_open,managed)
+        return _launch(project,no_open,managed,independent)
 
 
-def _launch(project,no_open,managed):
+def _launch(project,no_open,managed,independent):
     data = project / ".montage/workbench"
     record = data / "server.json"
     try: previous = json.loads(record.read_text())
     except (FileNotFoundError,json.JSONDecodeError): previous = None
+    restart_port = None
     if previous:
         client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         base=previous['url'].split('/?')[0]
@@ -77,7 +78,7 @@ def _launch(project,no_open,managed):
             try:
                 with client.open(base+'/api/health',timeout=3) as response:healthy=json.load(response).get('ok') is True
             except Exception:healthy=False
-            if runtime.get('codeFingerprint')!=code_fingerprint() or not healthy:
+            if runtime.get('codeFingerprint')!=code_fingerprint() or not healthy or (independent and runtime.get('serviceMode')!='standalone'):
                 try:queue=json.loads((data/'queue.json').read_text())
                 except FileNotFoundError:queue={'items':[]}
                 except (OSError,json.JSONDecodeError) as exc:raise RuntimeError('无法核对执行锁，未自动重启服务') from exc
@@ -87,6 +88,7 @@ def _launch(project,no_open,managed):
                     return {**previous,'reused':True,'deferredUpgrade':True,'browserOpened':bool(opened)}
                 request=urllib.request.Request(base+'/api/shutdown',data=b'{}',headers={'Origin':base,'Content-Type':'application/json'})
                 client.open(request,timeout=5).read()
+                restart_port=previous['port']
                 alive=False
         if alive:
             if not no_open:opened=webbrowser.open(previous['url'])
@@ -96,14 +98,18 @@ def _launch(project,no_open,managed):
         command=python_command(Path(__file__).with_name('server.py'))+' --project '+shlex.quote(str(project))+' --port 0 --host workbuddy --service-mode host'
         return {'httpStarted':False,'needsHostService':True,'serverCommand':command,'instruction':'使用 WorkBuddy 原生命令工具的官方后台模式运行 serverCommand，保存真实后台句柄；服务就绪后重新执行原入口，检查 /api/health 并复用同一服务。无需启动 Terminal 或执行项目快捷方式。不要通过自行脱离子进程或删除宿主环境变量绕过执行生命周期。'}
     data.mkdir(parents=True, exist_ok=True)
-    probe = socket.socket()
-    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        probe.bind(("127.0.0.1", 8765)); port = 8765
-    except OSError:
-        port = 0
-    finally:
-        probe.close()
+    preferred_port = restart_port or 8765
+    port = 0
+    for _ in range(15 if restart_port else 1):
+        with socket.socket() as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind(('127.0.0.1', preferred_port))
+            except OSError:
+                if restart_port: time.sleep(.1)
+            else:
+                port=preferred_port
+                break
     cmd = [sys.executable, str(Path(__file__).with_name("server.py")), "--project", str(project), "--port", str(port)]
     if shutil.which("rtk"):
         cmd = ["rtk", "proxy", *cmd]
@@ -132,7 +138,7 @@ def main():
     p.add_argument('--project',type=Path,default=default)
     p.add_argument('--no-open',action='store_true')
     args=p.parse_args()
-    print(json.dumps(launch(args.project,args.no_open),ensure_ascii=False))
+    print(json.dumps(launch(args.project,args.no_open,independent=True),ensure_ascii=False))
 
 
 if __name__ == "__main__":

@@ -52,18 +52,21 @@ class Pipeline:
             return [sys.executable,str(Path(__file__).with_name('runtime_compat.py')),str(entry),*map(str,args)]
         return ['uv','run','--python','3.11',str(entry),*map(str,args)]
 
-    def invoke(self, row, lease, action, extra=None, job=None):
+    def invoke(self, row, lease, action, extra=None, job=None, cli_args=None):
         if self.invoke_override: return self.invoke_override(row, lease, action, extra or [], job)
         job = Path(job or row['job'])
-        args = self.command(self.engine(job), action, job, *(extra or []))
+        args = self.command(self.engine(job), *(cli_args or [action, job, *(extra or [])]))
         if action == 'setup': args.append('--install')
         if action == 'avatars': args += ['--wait-seconds','0']
         if shutil.which('rtk'): args = ['rtk','proxy',*args]
         env = {**os.environ, 'MONTAGE_PROJECT_ROOT':str(self.app.project),
                'MONTAGE_QUEUE_ITEM':row['id'], 'MONTAGE_QUEUE_LEASE':lease}
-        log_dir = job / 'pipeline-logs'; self.app.ensure_dir(log_dir)
+        owner=Path(row['job'])
+        if action=='revise':
+            owner=self.app.data/'queue-workers'/row['id']
+        log_dir = (owner if action=='revise' else job) / 'pipeline-logs'; self.app.ensure_dir(log_dir)
         stdout, stderr = log_dir / (action+'.out'), log_dir / (action+'.err')
-        receipt=job/'pipeline-process.json';prior=self.read(receipt,{})
+        receipt=owner/'pipeline-process.json';prior=self.read(receipt,{})
         if prior.get('state')=='running':
             try:os.kill(prior['pid'],0)
             except ProcessLookupError:pass
@@ -72,9 +75,11 @@ class Pipeline:
             process = subprocess.Popen(args, cwd=self.app.project, env=env, stdout=out, stderr=err,start_new_session=sys.platform!='win32')
             self.write(receipt,{'pid':process.pid,'state':'running','action':action,'leaseHash':hashlib.sha256(lease.encode()).hexdigest(),'started':time.time()})
             last_report = time.monotonic()
+            deadline = last_report + 600 if action in ('inventory','revise') else None
             while process.poll() is None:
                 current = self.app.queue.item(row['id'])
-                if current.get('lease') != lease or current['status']!='running':
+                timed_out = deadline is not None and time.monotonic() >= deadline
+                if current.get('lease') != lease or current['status']!='running' or timed_out:
                     if sys.platform!='win32':os.killpg(process.pid,signal.SIGTERM)
                     else:process.terminate()
                     try: process.wait(timeout=15)
@@ -83,7 +88,7 @@ class Pipeline:
                         try:os.killpg(process.pid,signal.SIGKILL)
                         except ProcessLookupError:pass
                     self.write(receipt,{'pid':process.pid,'state':'exited','action':action,'cancelled':True,'ended':time.time()})
-                    raise ValueError('当前阶段已停止，云端任务 ID 与已有资产保留')
+                    raise ValueError('素材准备超时，可重试原序号' if timed_out else '当前阶段已停止，云端任务 ID 与已有资产保留')
                 if time.monotonic()-last_report >= 60:
                     self.app.queue.report(row['id'],lease,PHASE.get(action,0),'running','仍在执行本地步骤：'+action)
                     last_report=time.monotonic()
@@ -130,7 +135,9 @@ class Pipeline:
             if current['status']=='stopping':
                 self.app.queue.report(ident,lease,PHASE[step],'running','已到停止检查点')
             if step in journal['steps']: continue
-            if step.endswith('-review'):
+            if step=='check' and journal.get('reviewedCheck') and (job/'check.json').is_file() and journal['reviewedCheck']==fingerprint(job/'check.json'):
+                journal.pop('reviewedCheck')
+            elif step.endswith('-review'):
                 if not self.gate(job,step):
                     self.write(journal_path,{**journal,'plan':fingerprint(job/'plan.json'),'waiting':step})
                     return {'state':'needs_review','gate':step,'job':str(job),'phase':PHASE[step]}
@@ -172,4 +179,9 @@ class Pipeline:
         if kind!='content':extra+=['--frames',*(frames or [])]
         code,result=self.invoke(row,lease,REVIEW_ACTIONS[kind],extra)
         if code: raise ValueError(str(result))
+        if kind=='contrast' and result.get('renderAcceptedWithVisualContrastReview'):
+            journal_path=job/'pipeline.json'
+            journal=self.read(journal_path,{})
+            if journal.get('plan')==fingerprint(job/'plan.json') and 'carve' in journal.get('steps',[]) and 'check' not in journal['steps']:
+                self.write(journal_path,{**journal,'reviewedCheck':fingerprint(job/'check.json')})
         return result

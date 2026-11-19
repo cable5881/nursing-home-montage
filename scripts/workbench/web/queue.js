@@ -17,7 +17,7 @@ renderCreate=function(){
   const paint=()=>{const selected=chosen();slots=[];for(const p of selected){const person=people.find(x=>x.id===p.id);for(let i=0;i<p.count;i++)slots.push({key:p.id+':'+i,name:person.name,number:i+1});}f.querySelectorAll('[data-queue-person]').forEach(x=>{const row=x.closest('.batch-person');row.classList.toggle('is-selected',x.checked);row.querySelector('select').disabled=!x.checked;});const area=$('#video-preference-fields');area.innerHTML=slots.map((x,i)=>`<div class="form-group"><label class="field-label" for="video-pref-${i}">${E(x.name)} · 本批第 ${i+1} 条</label><textarea id="video-pref-${i}" data-video-preference="${i}" data-slot-key="${E(x.key)}" rows="2" placeholder="留空继承整批偏好。可指定这一条的重点，封面、标题、口播和镜头会一起适配。">${E(preferenceMap[x.key]||'')}</textarea></div>`).join('');let preview=$('#batch-order-preview');if(!preview){area.closest('details').insertAdjacentHTML('beforebegin','<div id="batch-order-preview" class="batch-order-preview"></div>');preview=$('#batch-order-preview');}preview.innerHTML=`<strong>本批次 ${slots.length} 条</strong><p>${selected.map(x=>E(people.find(p=>p.id===x.id).name)+' '+x.count+' 条').join(' → ')||'先选择出镜人物'}</p><small>按上方顺序追加到队尾，同一时刻只制作一条。</small>`;f.querySelector('[type=submit]').innerHTML=icon('plus')+` 提交 ${slots.length} 条，加入队尾 `+icon('arrow-right');createDraft.people=selected;createDraft.person=selected[0]?.id;createDraft.count=slots.length;createDraft.videoPreferenceMap=preferenceMap;createDraft.videoPreferences=slots.map(x=>preferenceMap[x.key]||'');};
   paint();const oldInput=f.oninput;
   f.oninput=e=>{capturePreferences();oldInput(e);createDraft.people=chosen();createDraft.person=createDraft.people[0]?.id;createDraft.videoPreferenceMap=preferenceMap;if(e.target.matches('[data-queue-person],[data-queue-count]'))paint();createDraft.count=slots.length;createDraft.videoPreferences=slots.map(x=>preferenceMap[x.key]||'');saveDraft();};
-  const note=f.querySelector('.inline-note');if(note&&hasServices()&&hasPerson())note.textContent='提交后会保存在本地队列。Agent 连接后按顺序执行，不需要逐条点开始。';
+  const note=f.querySelector('.inline-note');if(note&&hasServices()&&hasPerson())note.textContent=state.config.agent.mode==='local'?'提交后由本机工作台按顺序制作。':'提交后会保存在本地队列。Agent 连接后按顺序执行，不需要逐条点开始。';
   f.onsubmit=async e=>{e.preventDefault();$('#create-error').textContent='';capturePreferences();await busy(f.querySelector('[type=submit]'),async()=>{try{const selected=chosen();if(!selected.length)throw new Error('请选择至少一位出镜数字人');const values={...Object.fromEntries(new FormData(f)),people:selected,person:selected[0].id,count:slots.length,music:f.elements.music.checked,videoPreferences:slots.map(x=>preferenceMap[x.key]||'')};await api('/api/draft',{...values,videoPreferenceMap:preferenceMap});const task=await api('/api/tasks',values);await api('/api/tasks/'+task.id+'/start',{});await refresh(false);setRoute('task/'+task.id);}catch(err){$('#create-error').textContent=err.message;}});};
 };
 function queueButton(row,options={}){
@@ -44,7 +44,7 @@ function queueStatusLabel(row){
 function queueDisplayMessage(row) {
   if(row.status==='cancelled')return row.settled?'已取消，执行者已结束；已有文件保留':'取消已提交，等待执行者退出确认；已有文件保留';
   if(row.status==='stopping')return '取消已提交，正在等待停止检查点与执行者退出确认';
-  if(row.status==='queued'&&row.id===state.queue?.headId&&['video','planning'].includes(row.kind)&&!(state.config.agent.canDispatch??(state.config.agent.state==='connected')))return '等待 '+(state.config.agent.label||'WorkBuddy')+' 重新连接接单；任务已保存，顺序不变';
+  if(row.status==='queued'&&row.id===state.queue?.headId&&['video','planning'].includes(row.kind)&&!(state.config.agent.canDispatch??(state.config.agent.state==='connected')))return state.config.agent.mode==='local'?'等待启用独立制作，任务已保存在原队列。':'等待 '+(state.config.agent.label||'WorkBuddy')+' 重新连接接单；任务已保存，顺序不变';
   if(row.activityMessage)return row.activityMessage;
   if(row.message!=='正在检查当前制作状态；确认结束前不会开始下一条')return row.message||'';
   const task=state.tasks.find(t=>t.id===row.taskId),prefix='第 '+(row.index+1)+' 条 · ';
@@ -59,6 +59,7 @@ function batchProgress(task){
 }
 function connectionHelp(row){
   if(!row||row.status!=='queued'||!['video','planning'].includes(row.kind)||(state.config.agent.canDispatch??(state.config.agent.state==='connected')))return '';
+  if(state.config.agent.mode==='local')return `<p class="queue-connection">任务会在配置完成后按原顺序运行。<a class="text-button" href="#settings">配置模型 ${icon('arrow-right')}</a></p>`;
   return `<p class="queue-connection">等待 ${E(state.config.agent.label||'WorkBuddy')} 接单。<button class="text-button" data-action="check-agent">请求恢复连接</button><a class="text-button" href="#settings">连接方式 ${icon('arrow-right')}</a></p>`;
 }
 function queueItemTitle(row) {
@@ -84,7 +85,7 @@ function queuePanel() {
     </div>
     ${pending.length>1?`<details class="queue-next"><summary>查看后面的 ${pending.length-1} 条</summary>${pending.slice(1).map(x=>`<div class="queue-next-item"><span class="queue-number" aria-label="当前队列第 ${x.position} 位">第 ${x.position} 位</span><div class="queue-next-info"><a href="${queueItemLink(x)}">${queueItemTitle(x)}</a><span>${E(x.title)}</span></div><div class="queue-actions">${queueButton(x)}</div></div>`).join('')}</details>`:''}
     ${typeof productionDiagnosticHtml==='function'?productionDiagnosticHtml(head):''}
-    ${!(state.config.agent.canDispatch??(state.config.agent.state==='connected'))&&['video','planning'].includes(head.kind)&&head.status==='queued'?'<p class="queue-connection">等待 '+E(state.config.agent.label||'WorkBuddy')+' 接单。<button class="text-button" data-action="check-agent">请求恢复连接</button><a class="text-button" href="#settings">连接方式 '+icon('arrow-right')+'</a></p>':''}
+    ${connectionHelp(head)}
   </section>`;
 }
 const tasksBeforeQueue=renderTasks;
@@ -100,6 +101,7 @@ function taskAnswerNotice(t) {
     return '<p class="inline-note" role="status">答复已保存。当前执行者结束后，会按原序号继续。</p>';
   if(t.status!=='queued'||!row?.answerSaved)return '';
   const agent=state.config.agent;
+  if(agent.mode==='local')return `<p class="inline-note" role="status">答复已保存。${agent.canDispatch?'本机工作台会按原序号继续。':'<a href="#settings">启用独立制作</a>后会按原序号继续。'}</p>`;
   if(agent.canDispatch??(agent.state==='connected'))
     return '<p class="inline-note" role="status">答复已保存，等待 Agent 领取原任务。</p>';
   const label=E(agent.label||'Agent');

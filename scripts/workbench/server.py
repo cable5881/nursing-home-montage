@@ -100,7 +100,7 @@ class App:
         self.project = Path(project).resolve()
         self.skill = find_skill(self.project, skill)
         if not self.skill:
-            raise ValueError("没有找到 nursing-home-montage skill，请先在 WorkBuddy 安装。")
+            raise ValueError("没有找到 nursing-home-montage skill，请从已安装的工作台入口启动。")
         os.environ["MONTAGE_PROJECT_ROOT"] = str(self.project)
         sys.path.insert(0, str(self.skill / "scripts"))
         self.pc = importlib.import_module("project_config")
@@ -123,8 +123,10 @@ class App:
         self.queue=JobQueue(self,read,write)
         from planning import BatchPlanning
         from channel import AgentChannel
+        from model_api import ModelSettings
         self.planning=BatchPlanning(self,read,write)
         self.channel=AgentChannel(self,read,write)
+        self.models=ModelSettings(self,read,write)
         from music_library import MusicLibrary
         self.music = MusicLibrary(self, read, write, run_command)
         from video_edits import VideoEdits
@@ -209,12 +211,21 @@ class App:
         for ident, p in cfg["people"].items():
             people.append({k: p.get(k) for k in ("name", "social_media_name", "speaker", "custom_speaker_id", "status", "speech_rate", "connection", "sample")} | {"id": ident, "ready": bool(p.get("speaker") and self.pc.asset_path(p.get("portrait")) and self.pc.asset_path(p.get("portrait")).is_file()), "hasPortrait": bool(p.get("portrait")), "isDefault": ident == cfg.get("default_person")})
         storage = self.pc.storage_settings(c.get("storage"))
-        return {"project": str(self.project), "version": (self.skill / "VERSION").read_text().strip(), "people": people, "defaultPerson": cfg.get("default_person"), "connection": {"speech": bool(keys[0]), "ak": bool(keys[1]), "sk": bool(keys[2]), "storage": storage, "cloneMode": c.get("clone_mode", ""), "speakerPool": c.get("speaker_pool", [])}, "preferences": {"music": cfg.get("settings", {}).get("music", {}).get("enabled", True), "coverHeader": cfg.get("settings", {}).get("cover", {}).get("header_text", "")}, "agent": self.agent_state(), "phases": PHASES, "onboarded": read(self.data / "preferences.json", {}).get("onboarded", False)}
+        return {"project": str(self.project), "version": (self.skill / "VERSION").read_text().strip(), "people": people, "defaultPerson": cfg.get("default_person"), "connection": {"speech": bool(keys[0]), "ak": bool(keys[1]), "sk": bool(keys[2]), "storage": storage, "cloneMode": c.get("clone_mode", ""), "speakerPool": c.get("speaker_pool", [])}, "preferences": {"music": cfg.get("settings", {}).get("music", {}).get("enabled", True), "coverHeader": cfg.get("settings", {}).get("cover", {}).get("header_text", "")}, "agent": self.agent_state(), "model": self.models.public(), "phases": PHASES, "onboarded": read(self.data / "preferences.json", {}).get("onboarded", False)}
 
     def agent_state(self):
+        host_name=read(self.data/'host.json',{}).get('host','workbuddy')
+        if self.models.enabled() or host_name == 'local':
+            settings = self.models.public()
+            ready = settings['enabled'] and settings['canEnable'] and settings['providers'][settings['provider']]['configured']
+            head = self.queue.head() or {}
+            return {'host': 'local', 'label': '独立制作', 'installed': True, 'mode': 'local',
+                    'state': 'connected' if ready else 'unchecked', 'canDispatch': ready,
+                    'workerActive': bool(head.get('localExecution') and not head.get('settled')),
+                    'message': '本机程序自动接单' if ready else '请在设置中保存模型 Key 并启用独立制作'}
         host=read(self.data/'agent-connection.json',{});age=time.time()-host.get('seen',0)
         channel=self.channel.state()
-        host_name=read(self.data/'host.json',{}).get('host','workbuddy');label='Codex' if host_name=='codex' else 'WorkBuddy'
+        label='Codex' if host_name=='codex' else 'WorkBuddy'
         head=self.queue.head();active=bool(head and not head.get('settled'))
         waiting=host.get('state')=='waiting' and age<15
         worker_age=time.time()-(head or {}).get('seen',0)
@@ -231,7 +242,7 @@ class App:
                 'instruction':f"请连接本地视频工作台。读取 {HERE/'AGENT.md'}，项目路径为 {self.project}。使用原生文件通道接单并保持协调；命令通道失联时按文档恢复，不重复付费生成。"}
 
     def save_config(self, values):
-        with self.lock:
+        with self.transaction():
             conn = values.get("connection")
             if conn is not None:
                 allowed = {"api_key", "ak", "sk", "storage_provider", "bucket", "region", "endpoint"}
@@ -242,6 +253,11 @@ class App:
                     existing = self.pc.load()["connections"].get("main", {}).get("storage", {})
                     if not all(clean.get(k) or existing.get(k) for k in ("bucket", "region", "endpoint")):
                         raise ValueError("请补齐 TOS 存储桶、区域和 Endpoint")
+            if 'model' in values:
+                if not isinstance(values['model'], dict):
+                    raise ValueError('模型配置格式不正确。')
+                self.models.save(values['model'])
+            if conn is not None:
                 self.pc.store_connection("main", clean)
                 cfg = self.pc.load()
                 if conn.get("clone_mode") in ("prepaid", "postpaid"):
@@ -644,6 +660,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, result)
             if url.path == "/api/config":
                 return self.reply(200, self.app.save_config(v))
+            if url.path == "/api/model":
+                return self.reply(200, self.app.models.save(v))
+            if url.path == "/api/model/test":
+                return self.reply(200, self.app.models.client(v).test())
+            if url.path == "/api/services/test":
+                from service_checks import check
+                return self.reply(200, check(self.app, v))
             if url.path == "/api/people":
                 return self.reply(200, self.app.save_person(v))
             if url.path == "/api/scan":
@@ -855,7 +878,7 @@ def main():
     p.add_argument("--project", type=Path, default=Path.cwd())
     p.add_argument("--skill", type=Path)
     p.add_argument("--port", type=int, default=8765)
-    p.add_argument('--host', choices=('codex','workbuddy'))
+    p.add_argument('--host', choices=('codex','workbuddy','local'))
     p.add_argument('--open-page', action='store_true')
     p.add_argument('--service-mode', choices=('standalone','host'),default='standalone')
     args = p.parse_args()
@@ -864,6 +887,8 @@ def main():
         install()
     app = App(args.project, args.skill)
     app.service_mode=args.service_mode
+    from auto_worker import LocalCoordinator
+    coordinator = LocalCoordinator(app, read, write)
     if args.host:write(app.data/'host.json',{'host':args.host})
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     server.daemon_threads = True
@@ -874,7 +899,9 @@ def main():
         last_error=None
         while True:
             try:
-                app.queue.process_inbox();app.queue.reconcile();app.queue.launch_local();app.acceptance.tick();app.archive.tick();last_error=None
+                app.queue.process_inbox();app.queue.reconcile();app.queue.launch_local();app.acceptance.tick();app.archive.tick()
+                coordinator.tick()
+                last_error=None
             except Exception as exc:
                 error=app.redact(str(exc))
                 if error!=last_error:print('Queue: '+error,file=sys.stderr,flush=True)

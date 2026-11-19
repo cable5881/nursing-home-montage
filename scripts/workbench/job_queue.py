@@ -72,7 +72,7 @@ class JobQueue:
         return {'items':[{k:x.get(k) for k in fields}|{'position':pending.index(x)+1 if x in pending else None,'answerSaved':bool(x.get('answer'))} for x in data['items']],
                 'headId':head['id'] if head else None,'waiting':sum(x['status']=='queued' for x in pending),'paused':bool(head and head['status'] in BLOCKED),
                 'busy':bool(head and (head['status'] in ('assigned','running','stopping') or not head.get('settled'))),
-                'coordinator':'native-subagent','total':len(pending)}
+                'coordinator':'local' if self.app.models.enabled() else 'native-subagent','total':len(pending)}
 
     def for_task(self,ident):
         return [x for x in self.data()['items'] if x.get('taskId')==ident and x['kind']=='video']
@@ -98,15 +98,16 @@ class JobQueue:
         patch={'status':status,'message':message,'phase':current.get('phase',0),'completedCount':completed,'activeItemId':current['id'],'question':current.get('question') if status=='needs_input' else None}
         if any(original.get(k)!=v for k,v in patch.items()):self.app.update(ident,**patch)
 
-    def claim_next(self):
+    def claim_next(self, local=None):
         head=self.head()
         if not head or head['kind'] not in ('video','planning'):return None
-        return self.claim(head['kind'])
+        return self.claim(head['kind'], local=local)
 
-    def claim(self,kind='video'):
+    def claim(self,kind='video',local=None):
         with self.app.transaction():
             data=self.data();head=self.head(data)
             if not head or head['kind']!=kind or head['status']!='queued':return None
+            if kind in ('video','planning') and bool(local)!=self.app.models.enabled():return None
             if kind=='video' and self.app.task(head['taskId']).get('planningRequired'):
                 self.app.planning.verify(self.app.task(head['taskId']))
             if head.get('answer') and 'answerQuestion' not in head:
@@ -114,8 +115,12 @@ class JobQueue:
             head.update(status='assigned',settled=False,lease='run_'+secrets.token_urlsafe(24),generation=head.get('generation',0)+1,assigned=time.time(),updated=time.time(),message='正在派发整批策划子 Agent' if kind=='planning' else '正在交给 Agent 制作' if kind=='video' else '正在启动首帧更新')
             head.pop('platformAgentId',None);head.pop('workerId',None)
             head.pop('started',None)
+            head.pop('localExecution',None)
+            if local:
+                head['localExecution']=local
+                head['message']='独立制作已领取队首'
             self.save(data);self.sync_task(head['taskId'])
-            if kind in ('video','planning'):self.write_dispatch(head)
+            if kind in ('video','planning') and not local:self.write_dispatch(head)
             return dict(head)
 
     def previous_answer_question(self,row):
@@ -169,12 +174,16 @@ class JobQueue:
             self.app.event(row['taskId'],('整批策划：' if row['kind']=='planning' else f"第 {row['index']+1} 条 · {row['personName']}：")+row['message'])
             return row
 
-    def settle(self,ident,lease,agent_id):
+    def settle(self,ident,lease,agent_id=None,local=None):
         with self.app.transaction():
             data,row=self.checked(ident,lease)
             if self.app.channel.has_active(ident):raise ValueError('本地执行步骤尚未退出，暂不能回收；请读取执行结果后重试结束登记')
             if row['kind'] not in ('video','planning'):raise ValueError('首帧更新由本地进程确认结束，不能由 Agent 回收')
-            if row['kind'] in ('video','planning'):
+            if row.get('localExecution')!=local:
+                raise ValueError('结束回执与本条执行方式不符')
+            if local:
+                agent_id=local['id']
+            else:
                 if not agent_id or len(agent_id)>180:raise ValueError('必须回传原生子 Agent 标识，不能主对话直接制作')
                 if row.get('platformAgentId') and row['platformAgentId']!=agent_id:raise ValueError('结束回执与已绑定的原生执行者不一致')
                 if any((x.get('platformAgentId')==agent_id and x['id']!=ident) or any(a.get('agentId')==agent_id for a in x.get('attempts',[])) for x in data['items']):raise ValueError('每次制作或恢复必须使用全新子 Agent，不能复用旧上下文')
@@ -187,7 +196,7 @@ class JobQueue:
                     else:self.app.verify_job(Path(row['job']))
                 except (OSError,ValueError):row.update(status='failed',message='交付文件在结束确认前发生变化，请重新核验；队列已暂停')
             row.update(settled=True,updated=time.time())
-            if row['kind'] in ('video','planning'):row.setdefault('attempts',[]).append({'generation':row['generation'],'agentId':agent_id,'leaseHash':hashlib.sha256(lease.encode()).hexdigest(),'status':row['status'],'assigned':row.get('assigned'),'started':row.get('started'),'ended':time.time()})
+            row.setdefault('attempts',[]).append({'generation':row['generation'],'agentId':agent_id,'executor':'local' if local else 'native','leaseHash':hashlib.sha256(lease.encode()).hexdigest(),'status':row['status'],'assigned':row.get('assigned'),'started':row.get('started'),'ended':time.time()})
             if row.get('answerPending') and row['status']=='needs_input':
                 row.setdefault('answerQuestion',row.get('question'))
                 row.update(status='queued',message='补充已保存，继续当前序号',answerPending=False,question=None)
@@ -230,11 +239,12 @@ class JobQueue:
             else:raise ValueError('不支持这个队列操作')
             self.save(data);self.sync_task(row['taskId']);return row
 
-    def recover(self,ident,lease,evidence):
+    def recover(self,ident,lease,evidence,local=None):
         with self.app.transaction():
             data,row=self.checked(ident,lease)
             if row['kind'] not in ('video','planning'):raise ValueError('首帧更新请由本地进程检查状态')
             if not evidence:raise ValueError('必须先确认旧子 Agent 已结束，并记录检查结果')
+            if row.get('localExecution')!=local:raise ValueError('恢复请求与本条执行方式不符')
             if self.app.channel.has_active(ident):raise ValueError('本地执行步骤仍在运行，不能回收')
             cancelled=row['status'] in ('stopping','cancelled')
             status='cancelled' if cancelled else 'interrupted'
@@ -245,8 +255,17 @@ class JobQueue:
                     else:self.app.verify_job(Path(row['job']))
                 except (OSError,ValueError):message='结束已确认，但交付核验发生变化，请检查后重试'
                 else:status='completed';message='制作与退出均已确认，可继续后续队列'
+            if local and row['status']=='needs_input':
+                status='queued' if row.get('answerPending') else 'needs_input'
+                message='补充已保存，继续当前序号' if row.get('answerPending') else row['message']
+                if row.get('answerPending'):
+                    row.update(answerPending=False,question=None)
+            if local and row['status']=='failed':
+                status='failed';message=row['message']
+            if local and status=='interrupted' and row['status'] in ('assigned','running'):
+                status='queued';message='本地服务重启，按原序号恢复检查点'
             row.update(status=status,settled=True,recoveryRequested=False,recoveryState='responded',message=message,recoveryEvidence=str(evidence)[:1000],updated=time.time())
-            row.setdefault('attempts',[]).append({'generation':row['generation'],'agentId':row.get('platformAgentId'),'leaseHash':hashlib.sha256(lease.encode()).hexdigest(),'status':status,'ended':time.time(),'recovered':True})
+            row.setdefault('attempts',[]).append({'generation':row['generation'],'agentId':local['id'] if local else row.get('platformAgentId'),'executor':'local' if local else 'native','leaseHash':hashlib.sha256(lease.encode()).hexdigest(),'status':status,'ended':time.time(),'recovered':True})
             self.save(data);self.sync_task(row['taskId']);return row
 
     def task_action(self,task_id,action,answer=None):
