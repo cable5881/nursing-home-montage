@@ -90,7 +90,32 @@ function queuePanel() {
 const tasksBeforeQueue=renderTasks;
 renderTasks=function(){tasksBeforeQueue();main.querySelector('.page-heading').insertAdjacentHTML('afterend','<div id="queue-panel-area">'+queuePanel()+'</div>');};
 const taskControlsBeforeQueue=taskControls;
-taskControls=function(t){if(t.queueItems?.length){if(t.status==='needs_input')return t.queueItems.some(x=>x.answerPending)?'<p class="inline-note">补充已保存，当前制作结束后会按原序号继续。</p>':taskControlsBeforeQueue(t);if(['running','queued','stopping'].includes(t.status))return `<button class="danger-button" data-action="cancel-task" data-id="${t.id}">取消本批剩余制作</button><p class="form-help">当前条需等确认停止；本批尚未开始的条目直接取消，已有成品保留。</p>`;if(['failed','interrupted'].includes(t.status))return `<button class="primary" data-action="start-task" data-id="${t.id}">继续队首这一条</button>`;return '';}if(t.status==='draft')return `<button class="primary" data-action="start-task" data-id="${t.id}">提交到队尾 ${icon('arrow-right')}</button>`;return taskControlsBeforeQueue(t);};
+function taskAnswerRow(t) {
+  if(t.planning&&t.planning.id===t.activeItemId)return t.planning;
+  return t.queueItems?.find(x=>x.id===t.activeItemId);
+}
+function taskAnswerNotice(t) {
+  const row=taskAnswerRow(t);
+  if(t.status==='needs_input'&&row?.answerPending)
+    return '<p class="inline-note" role="status">答复已保存。当前执行者结束后，会按原序号继续。</p>';
+  if(t.status!=='queued'||!row?.answerSaved)return '';
+  const agent=state.config.agent;
+  if(agent.canDispatch??(agent.state==='connected'))
+    return '<p class="inline-note" role="status">答复已保存，等待 Agent 领取原任务。</p>';
+  const label=E(agent.label||'Agent');
+  const open=agent.host==='workbuddy'?'<button type="button" class="text-button" data-action="open-workbuddy">打开 WorkBuddy</button>':'';
+  return `<div class="inline-note"><p role="status">答复已保存，任务仍在原队首。等待 ${label} 重新接单。</p><p>把连接指令发到原对话，Agent 接单后会读取已保存的答复。</p><button type="button" class="secondary" data-action="copy-agent">复制连接指令</button> ${open}</div>`;
+}
+taskControls=function(t){
+  if(t.queueItems?.length){
+    if(t.status==='needs_input')return taskAnswerNotice(t)||taskControlsBeforeQueue(t);
+    if(inFlight.includes(t.status))return `${taskAnswerNotice(t)}<button class="danger-button" data-action="cancel-task" data-id="${t.id}">取消本批剩余制作</button><p class="form-help">当前条需等确认停止；本批尚未开始的条目直接取消，已有成品保留。</p>`;
+    if(['failed','interrupted'].includes(t.status))return `<button class="primary" data-action="start-task" data-id="${t.id}">继续队首这一条</button>`;
+    return '';
+  }
+  if(t.status==='draft')return `<button class="primary" data-action="start-task" data-id="${t.id}">提交到队尾 ${icon('arrow-right')}</button>`;
+  return taskControlsBeforeQueue(t);
+};
 function batchCoverItems(t) {
   return (state.queue?.items||[]).filter(x=>x.kind==='cover'&&x.taskId===t.id);
 }
@@ -119,7 +144,32 @@ taskCurrent=function(t){if(t.queueItems?.length&&['queued','partial','cancelled'
 const taskBeforeQueue=renderTask;
 renderTask=function(){taskBeforeQueue();const t=state.tasks.find(x=>x.id===selectedTask);if(!t?.queueItems?.length)return;const stageArea=$('#task-stages');if(['partial','cancelled'].includes(t.status))stageArea.hidden=true;else if(t.status==='queued'&&t.queueItems.every(x=>!x.phase))stageArea.innerHTML=stages(-1,false);stageArea.insertAdjacentHTML('afterend',batchItems(t));if(t.status==='needs_input'){const question=document.createElement('section');question.className='panel queue-question-panel';question.append($('#task-current'),$('#task-controls'));stageArea.before(question);}};
 const refreshBeforeQueue=refresh;
-refresh=async function(paint=true){const old=state?.queue,open=$('.queue-next')?.open;await refreshBeforeQueue(paint);if(paint&&JSON.stringify(old)!==JSON.stringify(state.queue)){if($('#queue-panel-area')){$('#queue-panel-area').innerHTML=queuePanel();if(open&&$('.queue-next'))$('.queue-next').open=true;}if(route==='task'){const t=state.tasks.find(x=>x.id===selectedTask);if(t?.queueItems?.length&&$('.batch-items')){const scratch=document.createElement('div');/* Render only the independent item section; preserve answer fields and playback. */scratch.innerHTML=batchItems(t);$('.batch-items').replaceWith(scratch.firstElementChild);}}}};
+refresh=async function(paint=true){
+  const oldQueue=state?.queue, oldAgent=state?.config.agent, open=$('.queue-next')?.open;
+  const previous=state?.tasks.find(x=>x.id===selectedTask);
+  await refreshBeforeQueue(paint);
+  if(!paint)return;
+  const queueChanged=JSON.stringify(oldQueue)!==JSON.stringify(state.queue);
+  const agentChanged=oldAgent?.canDispatch!==state.config.agent.canDispatch;
+  if((queueChanged||agentChanged)&&$('#queue-panel-area')){
+    $('#queue-panel-area').innerHTML=queuePanel();
+    if(open&&$('.queue-next'))$('.queue-next').open=true;
+  }
+  if(route!=='task')return;
+  const t=state.tasks.find(x=>x.id===selectedTask);
+  if(!t?.queueItems?.length)return;
+  const row=taskAnswerRow(t), oldRow=previous&&taskAnswerRow(previous);
+  if(previous?.status===t.status&&$('#task-controls')&&
+     ((t.status==='queued'&&row?.answerSaved&&agentChanged)||
+      (t.status==='needs_input'&&row?.answerPending&&!oldRow?.answerPending))){
+    $('#task-controls').innerHTML=taskControls(t);
+  }
+  if(queueChanged&&$('.batch-items')){
+    const scratch=document.createElement('div');
+    scratch.innerHTML=batchItems(t);
+    $('.batch-items').replaceWith(scratch.firstElementChild);
+  }
+};
 document.addEventListener('click',async e=>{const b=e.target.closest('[data-action]');if(!b||!b.dataset.action.startsWith('queue-'))return;const action=b.dataset.action.slice(6);await busy(b,async()=>{try{await api('/api/queue/items/'+b.dataset.id+'/'+action,{});await refresh(false);if(route==='tasks')renderTasks();else if(route==='task')renderTask();notify(action==='cancel'?'已请求取消，现有成品与云端任务 ID 保留':action==='recover'?'已请求检查当前状态，请保持 Agent 连接；确认前不会开始下一条':'按原序号继续，不改变队列顺序');}catch(err){notify(err.message,true);}});});
 const chromeBeforeQueue=updateChrome;
 updateChrome=function(){chromeBeforeQueue();$('#works-count').textContent=state.tasks.filter(t=>!(state.archives||[]).some(a=>a.id===t.id)).reduce((n,t)=>n+t.results.filter(r=>r.video).length,0)+(state.archives||[]).reduce((n,t)=>n+t.results.length,0)+state.institutions.filter(x=>x.reference).length;};

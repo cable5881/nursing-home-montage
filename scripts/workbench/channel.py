@@ -61,7 +61,7 @@ class AgentChannel:
         op=request.get('op')
         if op=='connect': return self.connect(request)
         if op=='poll':
-            record=self.authorize(request)
+            self.authorize(request)
             self.write(self.app.data/'agent-connection.json',{'state':'waiting','seen':time.time(),'transport':'native-files'})
             self.write(self.app.data/'connection-request.json',{'status':'connected','updated':time.time()})
             head=self.app.queue.head()
@@ -70,7 +70,12 @@ class AgentChannel:
                     data=self.app.queue.data();head=self.app.queue.item(head['id'],data);head.update(recoveryDispatched=True,recoveryState='dispatched');self.app.queue.save(data)
                 return {'state':'inspect','id':head['id'],'lease':head['lease'],'agentId':head.get('platformAgentId') or head.get('workerId'),'instruction':'用原生状态/停止工具确认真实执行者已结束，再以 recover 和实际 evidence 登记；无法确认就保持锁。'}
             row=self.app.queue.claim_next()
-            if not row: return {'state':'waiting','queue':self.app.queue.public()}
+            if not row:
+                result={'state':'waiting','queue':self.app.queue.public()}
+                if head and head['status']=='needs_input':
+                    result['waitingFor']='worker-exit' if head.get('answerPending') else 'workbench-answer'
+                    result['instruction']='保持主对话接单，继续 poll。工作台负责收集补充，无需在聊天中再提问。'
+                return result
             self.write(self.app.data/'agent-connection.json',{'state':'working','seen':time.time(),'transport':'native-files','item':row['id'],'task':row['taskId']})
             return {'state':'dispatch','id':row['id'],'kind':row['kind'],'lease':row['lease'],
                     'prompt':str(self.app.data/'queue-workers'/row['id']/'PROMPT.md'),

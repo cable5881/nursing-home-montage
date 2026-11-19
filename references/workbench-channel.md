@@ -20,6 +20,8 @@
 
 返回 waiting 时保持当前主对话接单；有队列时继续读，避免同时开启多个监听。健康的命令通道可用 bridge wait 前台阻塞等待；返回派发时作业已领取，不能再 poll 领取第二条。不能与原生文件通道并行领取，也不能把 wait 放在后台后结束协调轮次。若 Bash/命令代理失联，继续用原生 Read/Write 收发，不反复执行失败命令。
 
+收到子 Agent 的 needs_input 时，先等它退出并 settle，再继续接单。waitingFor=workbench-answer 表示任务页在等用户答复，worker-exit 表示页面已保存答复、旧执行者尚未结束。保持原生文件 poll 或前台 wait，工作台任务无需在宿主聊天里再打开提问弹窗。页面答复后按原序号派发，新的策划或视频子 Agent 在 request.json 里读取 answerQuestion 和 answer。
+
 返回 dispatch 时，使用宿主原生 Task/子 Agent 工具新建上下文，仅传 prompt 路径。kind=planning 负责整批；kind=video 只负责一条。若原生工具支持后台派发，取得真实 agentId 后立即发送 op=attach，携带 connectionToken、id、lease、agentId，保存执行者身份，便于主对话恢复后核查。严格等待本次原生子 Agent 结束后，用宿主实际返回的 agentId 登记：
 
 ```json
@@ -36,7 +38,7 @@
 {"version":2,"op":"accept","id":"本条 id","lease":"本条 lease","workerId":"PROMPT 中的 workerId"}
 ```
 
-普通进度：op=report，增加 phase（0–5）、status（running/needs_input/failed/completed）、message；needs_input 必须带 question。状态与执行锁分开保存，report completed 之后仍须结束原生子 Agent，再由主 Agent settle。
+普通进度：op=report，增加 phase（0–5）、status（running/needs_input/failed/completed）、message。needs_input 必须带完整 question，选项直接写在问题里。收到 needs_input、failed 或 completed 的终态回执后退出子 Agent，由主 Agent settle。
 
 固定阶段执行：
 

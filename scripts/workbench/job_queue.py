@@ -69,7 +69,7 @@ class JobQueue:
         data=self.data();head=self.head(data)
         pending=[x for x in data['items'] if not(x['status'] in TERMINAL and x.get('settled'))]
         fields=('id','taskId','index','kind','sequence','personName','number','title','status','phase','message','created','updated','platformAgentId','settled','recoveryRequested','answerPending','recoveryRequestedAt','recoveryDispatched','recoveryState','recoveryResult')
-        return {'items':[{k:x.get(k) for k in fields}|{'position':pending.index(x)+1 if x in pending else None} for x in data['items']],
+        return {'items':[{k:x.get(k) for k in fields}|{'position':pending.index(x)+1 if x in pending else None,'answerSaved':bool(x.get('answer'))} for x in data['items']],
                 'headId':head['id'] if head else None,'waiting':sum(x['status']=='queued' for x in pending),'paused':bool(head and head['status'] in BLOCKED),
                 'busy':bool(head and (head['status'] in ('assigned','running','stopping') or not head.get('settled'))),
                 'coordinator':'native-subagent','total':len(pending)}
@@ -109,12 +109,30 @@ class JobQueue:
             if not head or head['kind']!=kind or head['status']!='queued':return None
             if kind=='video' and self.app.task(head['taskId']).get('planningRequired'):
                 self.app.planning.verify(self.app.task(head['taskId']))
+            if head.get('answer') and 'answerQuestion' not in head:
+                head['answerQuestion']=self.previous_answer_question(head)
             head.update(status='assigned',settled=False,lease='run_'+secrets.token_urlsafe(24),generation=head.get('generation',0)+1,assigned=time.time(),updated=time.time(),message='正在派发整批策划子 Agent' if kind=='planning' else '正在交给 Agent 制作' if kind=='video' else '正在启动首帧更新')
             head.pop('platformAgentId',None);head.pop('workerId',None)
             head.pop('started',None)
             self.save(data);self.sync_task(head['taskId'])
             if kind in ('video','planning'):self.write_dispatch(head)
             return dict(head)
+
+    def previous_answer_question(self,row):
+        if row.get('question'):
+            return row['question']
+        # Older native jobs cleared the question when storing a page answer.
+        for path in self.inbox.glob('*.request.json'):
+            try:
+                request=self.read(path,{})
+                if not isinstance(request,dict) or (request.get('op'),request.get('id'),request.get('lease'),request.get('status'))!=('report',row['id'],row.get('lease'),'needs_input'):
+                    continue
+                receipt=self.read(path.with_name(path.name.removesuffix('.request.json')+'.result.json'),{})
+                if isinstance(receipt,dict) and receipt.get('ok') and isinstance(request.get('question'),str):
+                    return request['question']
+            except (OSError,ValueError):
+                continue
+        return None
 
     def checked(self,ident,lease,data=None):
         data=data or self.data();row=self.item(ident,data);head=self.head(data)
@@ -170,7 +188,9 @@ class JobQueue:
                 except (OSError,ValueError):row.update(status='failed',message='交付文件在结束确认前发生变化，请重新核验；队列已暂停')
             row.update(settled=True,updated=time.time())
             if row['kind'] in ('video','planning'):row.setdefault('attempts',[]).append({'generation':row['generation'],'agentId':agent_id,'leaseHash':hashlib.sha256(lease.encode()).hexdigest(),'status':row['status'],'assigned':row.get('assigned'),'started':row.get('started'),'ended':time.time()})
-            if row.get('answerPending') and row['status']=='needs_input':row.update(status='queued',message='补充已保存，继续当前序号',answerPending=False)
+            if row.get('answerPending') and row['status']=='needs_input':
+                row.setdefault('answerQuestion',row.get('question'))
+                row.update(status='queued',message='补充已保存，继续当前序号',answerPending=False,question=None)
             self.save(data);self.sync_task(row['taskId']);return row
 
     def action(self,ident,action,answer=None):
@@ -188,7 +208,9 @@ class JobQueue:
                 if action=='retry' and row['status']=='needs_input':raise ValueError('请先在页面答复当前问题，再继续这一条')
                 if action=='answer':
                     if row['status']!='needs_input' or not str(answer or '').strip():raise ValueError('请填写当前问题的补充信息')
+                    if row.get('answerPending'):raise ValueError('补充已保存，正在等待本条执行者结束')
                     row['answer']=str(answer).strip()[:20000]
+                    row['answerQuestion']=row.get('question')
                     if not row.get('settled'):row['answerPending']=True
                 elif not row.get('settled'):raise ValueError('子 Agent 尚未结束，请先等待或请求检查旧执行者')
                 if row.get('settled'):
@@ -241,7 +263,7 @@ class JobQueue:
 
     def worker_task(self,row):
         parent=self.app.task(row['taskId']);i=row['index']
-        task={**parent,'id':row['id'],'parentTaskId':parent['id'],'job':row['job'],'count':1,'person':row['person'],'personName':row['personName'],'videoPreferences':[(parent.get('videoPreferences') or ['']*parent['count'])[i]],'session':row['id'],'answer':row.get('answer')}
+        task={**parent,'id':row['id'],'parentTaskId':parent['id'],'job':row['job'],'count':1,'person':row['person'],'personName':row['personName'],'videoPreferences':[(parent.get('videoPreferences') or ['']*parent['count'])[i]],'session':row['id']}
         for field in ('videoSpecs','queueItems','events','results','activeItemId'):task.pop(field,None)
         return task
 
@@ -249,14 +271,16 @@ class JobQueue:
         folder=self.app.data/'queue-workers'/row['id']
         self.app.ensure_dir(folder)
         task=self.app.task(row['taskId']) if row['kind']=='planning' else self.worker_task(row)
+        task={**task,'answer':row.get('answer'),'answerQuestion':row.get('answerQuestion')}
         self.write(folder/'request.json',task)
-        prompt=self.app.planning.prompt(self.app.task(row['taskId']),folder) if row['kind']=='planning' else self.app.prompt(task,row.get('answer'),request_path=folder/'request.json')
+        prompt=self.app.planning.prompt(task,folder) if row['kind']=='planning' else self.app.prompt(task,row.get('answer'),request_path=folder/'request.json')
         bridge=Path(__file__).parent/'bridge.py'
         import shlex
         prefix=f"{self.app.python_command(bridge)} --project {shlex.quote(str(self.app.project))}"
         prompt+=f"\n本条由独立原生子 Agent 执行，只处理这一条；不能派生 Agent。先读取 {self.app.skill/'references/workbench-channel.md'}，用原生文件 accept 领取，再用 run 请求执行。普通制作步骤与接口轮询由本地连续执行器完成；遇到内容、原片、排版及成片关卡时必须实际检查再记录审核。阶段0素材、1文案分镜、2配音数字人、3画面封面、4渲染检查、5打包。手工进度用本条带租约 op=report，不虚增百分比。\n"
         prompt+=f"\n仅在用户明确指定无页面且没有 HTTP 文件接收服务时，使用相同队列的 CLI：{prefix} accept {row['id']} --lease {shlex.quote(row['lease'])} --worker-id {row['id']}-g{row['generation']}；随后 {prefix} run {row['id']} --lease {shlex.quote(row['lease'])} --action ACTION。ACTION 与原生文件通道相同。需要审核时增加 --review-kind KIND --note-file 实际复核说明.txt --frames 实际检查帧。无页面模式不启动 HTTP。不要在有原生文件服务时先试 Bash。\n"
         prompt += '\n画面复核优先用联系图批量检查整体，再单独打开有疑点或文字看不清的原尺寸帧；合并可独立进行的读图与查询，避免重复成功步骤。仍保存并检查规范要求的素材、字幕与成片检查帧，不降低核验标准。\n'
+        prompt += '\n工作台任务需要用户决定时，用 needs_input 和 question 把完整问题及选项发到任务页，收到回执后立即退出。不要在宿主聊天里另开提问弹窗。恢复时读取 request.json 的 answer 和 answerQuestion，结合原问题理解数字选项或简短答复。\n'
         if row['kind']=='video' and self.app.task(row['taskId']).get('planningRequired'):
             prompt += f"\n整批策划已批准。本条 plan.json 与 inventory.json 已准备，不重新 inventory、不另写一套文案；读取 {self.app.planning.folder(self.app.task(row['taskId']))/'approved.json'} 的索引及本条计划即可。需要改变已批准内容时报告问题，不静默改写。\n"
         prompt += f"\n优先使用本地原生文件通道：读取 {self.app.skill/'references/workbench-channel.md'}。本条 id={row['id']}，lease={row['lease']}，workerId={row['id']}-g{row['generation']}。先发送 accept。阶段执行用 op=run，逐视频 action=advance；只在返回 needs_review 时实际检查并记录对应审核，再继续 advance。策划使用 prepare-planning / planning-check。普通轮询由本地连续执行器完成。无需依赖 WorkBuddy 的 Bash/命令代理，不能自行绕过任何权限拒绝。\n"
@@ -269,7 +293,7 @@ class JobQueue:
         fallback=self.inbox/f"{row['id']}-g{row['generation']}-settle.request.json"
         label='整批统一策划' if row['kind']=='planning' else row['personName']+'，本批第 '+str(row['index']+1)+' 条'
         if native:
-            return f"队首作业 {row['id']}（批次 {row['taskId']}）：{label}。你是主协调者，使用宿主原生工具创建全新子 Agent，仅传 {folder/'PROMPT.md'}。取得真实 agentId 后按原生文件通道 attach；等它真实退出再以主连接令牌、当前 id/lease 和真实标识 settle，然后重新 poll。失败也必须登记退出。不要使用 Bash 领取或回收，不伪造标识，不把已取消任务重新排队。"
+            return f"队首作业 {row['id']}（批次 {row['taskId']}）：{label}。你是主协调者，使用宿主原生工具创建全新子 Agent，仅传 {folder/'PROMPT.md'}。取得真实 agentId 后按原生文件通道 attach；等它真实退出再以主连接令牌、当前 id/lease 和真实标识 settle，然后重新 poll。needs_input 也先登记退出，再继续 poll 等工作台答复，不打开聊天提问弹窗。失败也必须登记退出。不要使用 Bash 领取或回收，不伪造标识，不把已取消任务重新排队。"
         return f"队首 #{row['sequence']}（批次 {row['taskId']}）：{label}。你是协调者，不得自己制作。使用刚才已验证的原生子 Agent 工具创建一个全新上下文，任务仅为：读取 {folder/'PROMPT.md'}，按该文件执行并返回短摘要。不要把其他视频上下文传入。子 Agent 结束后，取得其真实标识，运行 {prefix} settle {row['id']} --lease {shlex.quote(row['lease'])} --agent-id '真实子Agent标识'，然后重新 wait。即使子 Agent 失败或没有正式交付也必须 settle，队列会保留失败并暂停。不能先 wait 再回收旧 Agent，不能使用同一子 Agent 制作两条。若宿主 shell 代理断开但原生文件工具可用，确认子 Agent 已结束后，按 AGENT.md 的结束回执格式，用原生 Write 写入 {fallback}，本条 id={row['id']}，lease={row['lease']}；agentId 必须填真实宿主标识。读取同名 .result.json 确认 ok，不手改 queue.json。"
 
     def cover_state(self,row,status,message):
