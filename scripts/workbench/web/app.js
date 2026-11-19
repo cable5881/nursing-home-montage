@@ -444,7 +444,12 @@ function taskControls(t) {
   if (!['completed','awaiting_acceptance','accepted'].includes(t.status)) return state.config.agent.state === 'connected' ? `<button class="primary" data-action="start-task" data-id="${t.id}">${icon(t.status === 'draft' ? 'spark' : 'retry')}${t.status === 'draft' ? '交给 Agent 开始制作' : '从已有阶段继续'}</button>` : `<p class="inline-note">任务已保存在本地。先连接 Agent，再回来开始制作。</p><a href="#settings" class="primary">连接 Agent ${icon('arrow-right')}</a>`;
   return '';
 }
-function eventLog(t) {return t.events.length ? t.events.map(e => `<div class="event ${E(e.kind)}"><time>${new Date(e.time * 1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}</time><p>${E(e.message)}</p></div>`).join('') : '<p class="subtle">开始后，素材整理、写稿和制作进度会出现在这里。</p>';}
+function eventLog(t) {return t.events.length ? t.events.slice().reverse().map(e => `<div class="event ${E(e.kind)}"><time>${new Date(e.time * 1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}</time><p>${E(e.message)}</p></div>`).join('') : '<p class="subtle">开始后，素材整理、写稿和制作进度会出现在这里。</p>';}
+function refreshEventLog(log, task) {
+  const {scrollTop, scrollHeight} = log;
+  log.innerHTML = eventLog(task);
+  log.scrollTop = scrollTop <= 2 ? 0 : Math.max(0, scrollTop + log.scrollHeight - scrollHeight);
+}
 function bindAnswer() {const form = $('#answer-form'); if(form)form.addEventListener('submit', async e => {e.preventDefault();await busy(form.querySelector('button'), async () => {try {await api(`/api/tasks/${selectedTask}/answer`,{answer:form.elements.answer.value});await refresh(false);renderTask();}catch(err){notify(err.message,true);}});});}
 function renderOnboarding() {
   const steps = [{done:hasServices(),name:'配置服务连接',text:'准备火山语音 API Key 和视频 AK / SK，填一次就好。',link:'settings',button:'配置服务'},{done:hasPerson(),name:'添加你的数字人',text:'准备人物照片，填好社媒署名，绑定已有音色或提供声音样本。',link:'people',button:'配置数字人'},{done:state.config.agent.state === 'connected',name:'连接 '+state.config.agent.label,text:'打开并登录 Agent，检查连接，让 Agent 能接手制作。',link:'settings',button:'检查连接'},{done:state.tasks.length > 0,name:'选好素材，制作第一条视频',text:'先在机构资料库添加实拍与介绍，再选择人物、数量和本批偏好。',link:'create',button:'开始制作'}];
@@ -535,7 +540,7 @@ async function refresh(paint=true) {
     const t=state.tasks.find(t=>t.id===selectedTask),prev=old.tasks.find(t=>t.id===selectedTask);
     if(!t)return;
     if(t.status!==prev?.status || JSON.stringify(t.results)!==JSON.stringify(prev?.results)){renderTask();return;}
-    if(t.updated!==prev?.updated){$('#task-current').innerHTML=taskCurrent(t);$('#task-stages').innerHTML=stages(t.phase,['running','queued'].includes(t.status));const log=$('#event-log');const bottom=log.scrollHeight-log.scrollTop-log.clientHeight<60;log.innerHTML=eventLog(t);if(bottom)log.scrollTop=log.scrollHeight;}
+    if(t.updated!==prev?.updated){$('#task-current').innerHTML=taskCurrent(t);$('#task-stages').innerHTML=stages(t.phase,['running','queued'].includes(t.status));refreshEventLog($('#event-log'),t);}
   }
 }
 async function init() {
