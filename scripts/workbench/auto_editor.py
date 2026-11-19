@@ -1,11 +1,16 @@
 """Structured editing and vision calls. The model cannot execute local tools."""
 from pathlib import Path
+import re
 import subprocess
 
 from model_api import image_part
 
 
 class NeedsInput(ValueError):
+    pass
+
+
+class PlanError(ValueError):
     pass
 
 
@@ -112,6 +117,39 @@ class Editor:
             output.append({'id': f'f{i}', 'text': text, 'source': source, 'quote': quote})
         return output
 
+    def batch_outline(self, context):
+        evidence = {}
+        for source, text in context['sources'].items():
+            for quote in re.findall(r'[^。！？\r\n]+[。！？]*', text):
+                if quote.strip():
+                    evidence[f'e{len(evidence) + 1}'] = {'source': source, 'quote': quote.strip()}
+        data = {k: v for k, v in context.items() if k not in ('sources', 'media')}
+        feedback = ''
+        for _ in range(3):
+            result = self.ask(
+                '为每条约一分钟的养老机构综合探访选出家属最关心的两到三组核心特点，通常只需三到五条简短事实。'
+                '每项只写一个能在正文里讲清的要点。除非用户特别要求，背景年份、门牌、规模数字和设施清单'
+                '无需列为每条都必须重复的共同事实。每条事实必须完全受其对应原文段落支持，并保留限定词。'
+                '从 evidence 中选择对应编号（如 e1），由程序取原文。如果已有 feedback，按提示修正。'
+                '事实不足时给出具体问题。JSON {"facts":[{"text":"简短事实","evidenceId":"e1"}],"question":null}。',
+                {**data, 'evidence': evidence, 'feedback': feedback})
+            question(result)
+            facts = result.get('facts')
+            if not isinstance(facts, list) or not 1 <= len(facts) <= 24:
+                feedback = '请在 facts 数组中给出实际可核对的共同事实。'
+                continue
+            output = []
+            for i, fact in enumerate(facts, 1):
+                text = fact.get('text') if isinstance(fact, dict) else None
+                key = fact.get('evidenceId') if isinstance(fact, dict) else None
+                if not isinstance(text, str) or not text.strip() or not isinstance(key, str) or key not in evidence:
+                    feedback = f'第 {i} 项必须包含非空的事实内容和 evidence 中实际存在的 evidenceId。'
+                    break
+                output.append({'id': f'f{i}', 'text': text.strip(), **evidence[key]})
+            if len(output) == len(facts):
+                return output
+        raise ValueError('共同事实提炼未通过原文校验。' + feedback)
+
     def plan(self, task, index, context, facts, previous, feedback=''):
         prefs = (task.get('videoPreferences') or [''] * task['count'])[index]
         person = (task.get('videoSpecs') or [{'person': task['person']}] * task['count'])[index]['person']
@@ -121,10 +159,15 @@ class Editor:
             '仅使用真实素材，选片基于提供的实看结果。开头和结尾选有运动的源视频；在短片剩余时长足够的区间取镜，'
             '预计每秒 3.5 至 4 个汉字，给足分镜，sourceStart 使用秒数。不要指定资源路径、任何运行设置或关闭审核。'
             '字幕由现有程序生成，可省略 captions；若有精确字幕偏好才逐条完整提供。'
-            '统一用传入 fact IDs，综合稿在 sentences 中覆盖全部；仅在用户偏好明确指定专题时返回 topicAuthorization 原话。'
+            '各事实写进实际口播后，在对应句的 factIds 数组中逐项标明传入的编号，如 ["f1","f2"]。'
+            '综合稿的 sentences 必须覆盖全部传入编号。收到 feedback 时先修正指出的问题。如果有事实遗漏，按原文补写再标注。'
+            '仅在用户偏好明确指定专题时返回 topicAuthorization 原话。'
             '若 revisedNarration 非空，逐字保留用户文案及标点，可重新断句但不删改文字。不够信息时填 question。'
-            '输出 JSON {"plan":{按规范的单条计划},"openingAngle":"开头","structure":"展开顺序",'
-            '"coverAngle":"封面主题","topicAuthorization":"","question":null}。\n'
+            '输出一个 JSON 对象。顶层结构为 {"plan":{},"openingAngle":"本条如何开场","structure":"本条展开顺序",'
+            '"coverAngle":"本条封面主题","topicAuthorization":"","question":null}。三项角度均填写具体内容。'
+            'plan 必须同时包含 institution、sentences、cover 和 publication。'
+            '封面放在 plan.cover，包含 main_title 和三个 labels；发布文案放在 plan.publication，'
+            '包含 title、description 和五个不同的 topics。两个字段都按同一条完整口播撰写。\n'
             + self.rules('plan-schema', 'narration', 'narration-polish', 'covers'),
             {**context, 'facts': facts, 'person': person, 'index': index + 1, 'total': task['count'],
              'preference': prefs, 'previousAngles': previous, 'feedback': feedback,
@@ -133,7 +176,9 @@ class Editor:
         question(result)
         raw = result.get('plan')
         if not isinstance(raw, dict):
-            raise ValueError('模型未返回完整的单条制作计划。')
+            raise PlanError('模型必须在顶层 plan 字段返回完整的单条制作计划。')
+        if not isinstance(raw.get('institution'), dict):
+            raise PlanError('plan.institution 必须填写为对象。')
         plan = {key: raw[key] for key in ('institution', 'sentences', 'asrPrompt', 'cover', 'publication') if key in raw}
         plan.update(version=1, person=person, facts=[{k: x[k] for k in ('id', 'source', 'quote')} for x in facts])
         plan['settings'] = {'music': {'enabled': task['music']}}
@@ -143,32 +188,53 @@ class Editor:
             plan['institution']['name'] = context['institutionName']
         selected = {x['path']: x for x in context['media']}
         sentences = plan.get('sentences', [])
-        if not sentences or len(sentences) > 100:
-            raise ValueError('口播句子缺失或过多。')
+        if not isinstance(sentences, list) or not 1 <= len(sentences) <= 100:
+            raise PlanError('plan.sentences 必须是包含口播句子和分镜的数组。')
         for i, sentence in enumerate(sentences):
+            if not isinstance(sentence, dict) or not isinstance(sentence.get('text'), str) or not isinstance(sentence.get('shots'), list):
+                raise PlanError(f'第 {i + 1} 句须包含口播 text 和 shots 数组。')
             for shot in sentence['shots']:
-                media = selected.get(shot['path'])
-                if not media or (media['kind'] == 'video' and not 0 <= shot.get('sourceStart', 0) < media['duration']):
-                    raise ValueError('选片超出了实际素材或有效时间。')
+                path = shot.get('path') if isinstance(shot, dict) else None
+                media = selected.get(path) if isinstance(path, str) else None
+                start = shot.get('sourceStart', 0) if media else None
+                if not media or (media['kind'] == 'video' and
+                                 (not isinstance(start, (int, float)) or not 0 <= start < media['duration'])):
+                    raise PlanError(f'第 {i + 1} 句选片超出了实际素材或有效时间，请核对 path 和 sourceStart。')
                 if (i == 0 or sentence.get('kind') == 'cta') and not media['motion']:
-                    raise ValueError('开头及片尾需选实际观察到运动的视频。')
+                    raise PlanError('开头及片尾需选实际观察到运动的视频。')
         if revised:
             text = ''.join(s['text'] for s in sentences)
             if ''.join(revised.split()) != ''.join(text.split()):
-                raise ValueError('修订稿必须保留用户原话。')
+                raise PlanError('修订稿必须保留用户原话。')
         for k, value in task.get('publicationOverride', {}).items():
             if k in ('title', 'description') and value:
+                if not isinstance(plan.get('publication'), dict):
+                    raise PlanError('plan.publication 必须填写为对象，以保留用户的发布文案。')
                 plan['publication'][k] = value
-        used = list(dict.fromkeys(f for sentence in sentences for f in sentence.get('factIds', [])))
+        used = {}
+        for number, sentence in enumerate(sentences, 1):
+            ids = sentence.get('factIds', [])
+            if not isinstance(ids, list) or any(not isinstance(f, str) for f in ids):
+                raise PlanError(f'第 {number} 句的 factIds 必须是编号字符串数组，如 ["f1","f2"]。')
+            used.update(dict.fromkeys(ids))
         authorization = result.get('topicAuthorization') or ''
         if authorization and (not isinstance(authorization, str) or authorization not in task.get('requirements', '') + '\n' + prefs):
-            raise ValueError('专题需能引用用户明确提出的要求。')
+            raise PlanError('专题需能引用用户明确提出的要求。')
         angles = {k: result.get(k) for k in ('openingAngle', 'structure', 'coverAngle')}
-        if any(not isinstance(v, str) or not v.strip() for v in angles.values()):
-            raise ValueError('缺少本条的开头、结构或封面角度。')
-        if not authorization and set(used) != {x['id'] for x in facts}:
-            raise ValueError('综合稿没有覆盖全部共同事实。')
-        return plan, {**angles, 'factCoverage': used, 'mode': 'topic' if authorization else 'comprehensive',
+        missing_angles = [k for k, v in angles.items() if not isinstance(v, str) or not v.strip()]
+        if missing_angles:
+            raise PlanError('请补齐顶层策划角度字段 ' + '、'.join(missing_angles) + '。')
+        expected = {x['id'] for x in facts}
+        unknown = sorted(set(used) - expected)
+        missing = sorted(expected - set(used)) if not authorization else []
+        issues = []
+        if missing:
+            issues.append('口播缺少共同事实 ' + '、'.join(missing) + '，请在对应句写清事实并标注编号')
+        if unknown:
+            issues.append('factIds 使用了未提供的编号 ' + '、'.join(unknown))
+        if issues:
+            raise PlanError('。'.join(issues) + '。')
+        return plan, {**angles, 'factCoverage': list(used), 'mode': 'topic' if authorization else 'comprehensive',
                       'topicAuthorization': authorization}
 
     def content_review(self, job, answer):

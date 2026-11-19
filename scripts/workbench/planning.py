@@ -110,20 +110,24 @@ class BatchPlanning:
             parsed.append({'index': i, 'path': str(plan_path), 'sha256': file_digest(plan_path), 'plan': plan})
         return draft, parsed, fingerprint
 
+    def validate_item(self, task, folder, index, plan, validate):
+        job = Path(task['job']) if task['count']==1 else Path(task['job']) / f'variant-{index+1:02d}'
+        self.app.ensure_dir(job)
+        if (job / 'runtime.json').is_file(): raise ValueError('已有视频已进入执行，不允许重写整批策划')
+        self.write(job / 'plan.json', plan)
+        for name in ('inventory.json', 'source-text.txt'):
+            shutil.copy2(folder / name, job / name)
+        validate(job)
+        # Validation can normalize Chinese text and resolve closing hooks.
+        return self.read(job / 'plan.json')
+
     def check(self, task, validate):
         draft, parsed, fingerprint = self.draft(task)
         folder = self.folder(task)
         if not (folder / 'inventory.json').is_file(): raise ValueError('请先完成共享素材索引')
         receipts = []
         for item in parsed:
-            job = Path(task['job']) if task['count']==1 else Path(task['job']) / f"variant-{item['index']+1:02d}"
-            self.app.ensure_dir(job)
-            if (job / 'runtime.json').is_file(): raise ValueError('已有视频已进入执行，不允许重写整批策划')
-            self.write(job / 'plan.json', item['plan'])
-            for name in ('inventory.json', 'source-text.txt'): shutil.copy2(folder / name, job / name)
-            validate(job)
-            # Validation can normalize Chinese text and resolve closing hooks.
-            normalized = self.read(job / 'plan.json')
+            normalized = self.validate_item(task, folder, item['index'], item['plan'], validate)
             self.write(Path(item['path']), normalized)
             receipts.append({'index':item['index'], 'path':item['path'], 'sha256':file_digest(item['path']),'planFingerprint':digest(normalized)})
         # Recheck after normalization, including duplicated complete scripts.

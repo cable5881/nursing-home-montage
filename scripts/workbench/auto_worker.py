@@ -5,9 +5,13 @@ import re
 import threading
 import uuid
 
-from auto_editor import Editor, NeedsInput, approved
+from auto_editor import Editor, NeedsInput, PlanError, approved
 from pipeline import Pipeline, fingerprint
 from planning import digest
+
+
+class StageError(ValueError):
+    pass
 
 
 class LocalCoordinator:
@@ -97,7 +101,7 @@ class Production:
         self.checkpoint()
         code, result = self.pipe.invoke(self.row, self.lease, action, extra=extra, job=job, cli_args=cli_args)
         if code:
-            raise ValueError(str(result.get('error') or result))
+            raise StageError(str(result.get('error') or result))
         return result
 
     def inventory(self, task, folder):
@@ -140,10 +144,11 @@ class Production:
         self.progress('正在向模型提交机构资料及实拍检查帧')
         context = self.editor.context(task, folder, answer)
         cache_path = folder / 'independent-planning.json'
-        identity = digest({'input': input_fingerprint, 'answer': answer})
+        # Rebuild unfinished outlines written before the batch stopped treating source details as core facts.
+        identity = digest({'input': input_fingerprint, 'answer': answer, 'editorialVersion': 2})
         cache = self.read(cache_path, {})
         if cache.get('input') != identity:
-            cache = {'input': identity, 'facts': self.editor.outline(context), 'plans': []}
+            cache = {'input': identity, 'facts': self.editor.batch_outline(context), 'plans': []}
             self.write(cache_path, cache)
         facts = cache['facts']
         items = []
@@ -157,7 +162,18 @@ class Production:
                     continue
                 cache['plans'] = cache['plans'][:index]
             self.progress(f'整批策划：正在编排第 {index + 1}/{task["count"]} 条')
-            plan, angles = self.editor.plan(task, index, context, facts, items[-12:])
+            feedback = ''
+            for attempt in range(3):
+                try:
+                    plan, angles = self.editor.plan(task, index, context, facts, items[-12:], feedback)
+                    self.app.planning.validate_item(task, folder, index, plan,
+                                                    lambda job: self.invoke('validate-plan', job=job))
+                    break
+                except (PlanError, StageError) as exc:
+                    feedback = self.app.redact(str(exc))[:1000]
+                    if attempt == 2:
+                        raise ValueError(f'第 {index + 1} 条计划未通过校验。{feedback}') from exc
+                    self.progress(f'整批策划：正在修正第 {index + 1}/{task["count"]} 条的校验问题')
             self.write(path, plan)
             item = {**angles, 'index': index, 'plan': str(path.relative_to(folder)), 'person': plan['person']}
             cache['plans'].append({'sha256': fingerprint(path), 'item': item})
