@@ -14,6 +14,8 @@
 rtk python3 SKILL/scripts/workbench.py --project PROJECT --host local
 ```
 
+Windows 双击 `scripts/workbench/打开工作台.cmd`，找不到已有项目时输入项目文件夹路径。也可在 PowerShell 中给它传入 `--project "D:\养老视频项目"`。Windows 启动器查找 Python 3.11 或更高版本。
+
 打开「设置 → 模型与独立制作」。先选平台，工作台会填入支持看图和 JSON 输出的默认模型及官方地址。火山方舟的地址为 `https://ark.cn-beijing.volces.com/api/v3`，模型 ID 可换成方舟接入点 ID。DeepSeek 官方地址为 `https://api.deepseek.com`。填写相应平台的推理 API Key，点「测试模型连接」，然后启用独立制作并保存。连接测试仅发送合成图，生产中的模型用量由所选平台的 Key 对应账号结算。
 
 接入其他服务时，选「自定义 · OpenAI 兼容」，填写该服务的 Base URL、模型 ID 和 API Key。工作台按 OpenAI Chat Completions 格式请求 `/chat/completions`，用 `Authorization: Bearer` 鉴权。远程地址使用 HTTPS，本机服务可用 HTTP。保存的 Key 与该地址绑定，换地址时填写对应的 Key。默认使用 JSON 模式，遇到服务不接受该参数时，可在「高级选项 → JSON 输出方式」选择「用提示词要求 JSON」，再点「测试模型连接」。测试通过说明该模型能识别合成图片并返回工作台可读取的 JSON 对象。

@@ -115,9 +115,13 @@ def _launch(project,no_open,managed,independent):
         cmd = ["rtk", "proxy", *cmd]
     log_path = data / "server.log"
     fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    # A double-clicked Windows batch window can close as soon as launch returns.
+    background = {'creationflags': subprocess.DETACHED_PROCESS} if sys.platform == 'win32' else {'start_new_session': True}
     with os.fdopen(fd, "a") as log:
         launch_id = uuid.uuid4().hex
-        process = subprocess.Popen(cmd, cwd=project, env={**os.environ, "MONTAGE_WORKBENCH_LAUNCH_ID": launch_id}, stdout=log, stderr=log, start_new_session=True)
+        process = subprocess.Popen(
+            cmd, cwd=project, env={**os.environ, "MONTAGE_WORKBENCH_LAUNCH_ID": launch_id},
+            stdin=subprocess.DEVNULL, stdout=log, stderr=log, **background)
     for _ in range(100):
         if process.poll() is not None:
             raise SystemExit("工作台启动失败，请查看 .montage/workbench/server.log")
@@ -134,11 +138,21 @@ def _launch(project,no_open,managed,independent):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     candidates=[Path.cwd(),*Path(__file__).resolve().parents]
-    default=next((x for x in candidates if (x/'.montage/project.json').is_file()),Path.cwd())
-    p.add_argument('--project',type=Path,default=default)
+    existing=next((x for x in candidates if (x/'.montage/project.json').is_file()),None)
+    p.add_argument('--project',type=Path)
+    p.add_argument('--ask-project',action='store_true',help='找不到已有项目时，询问用于存放素材和作品的项目目录')
     p.add_argument('--no-open',action='store_true')
     args=p.parse_args()
-    print(json.dumps(launch(args.project,args.no_open,independent=True),ensure_ascii=False))
+    project=args.project or existing
+    if project is None and args.ask_project:
+        try:
+            entered=input('请输入养老视频项目目录（可粘贴完整路径）：').strip().strip('"')
+        except EOFError:
+            p.error('请使用 --project 指定项目目录。')
+        if not entered:
+            p.error('请输入项目目录，或使用 --project 指定路径。')
+        project=Path(entered).expanduser()
+    print(json.dumps(launch(project or Path.cwd(),args.no_open,independent=True),ensure_ascii=False))
 
 
 if __name__ == "__main__":
