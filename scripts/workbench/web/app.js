@@ -180,7 +180,7 @@ function productionServiceSettings(config) {
       ${serviceTestControl('speech','测试语音连接','用所选音色合成四字短句，按语音平台规则计费。')}
       <details class="form-group" ${conn.cloneMode?'open':''}>
         <summary class="field-label">音色复刻设置</summary>
-        <p class="form-help">仅提供录音时，需在制作前单独发起复刻。成功后音色自动绑定到人物。</p>
+        <p class="form-help">在数字人页面上传录音并点击「开始复刻」。成功后音色会自动绑定到人物。</p>
         <div class="form-group"><label class="field-label" for="clone-mode">复刻方式</label>
           <select name="clone_mode" id="clone-mode">
             <option value="">保留当前设置</option>
@@ -311,14 +311,71 @@ function agentStatusBlock() {
   if(a.mode==='local')return `<div class="agent-status-box"><span>${icon('clapper')}</span><div><strong>本地独立制作</strong><p>${E(a.message)}</p></div></div>`;
   return `<div class="agent-status-box"><span>${icon('clapper')}</span><div><strong>${a.uncertain ? '等待进度回传' : a.state === 'connected' ? a.label+' 已连接' : a.installed ? '已检测到 Agent' : '等待宿主连接'}</strong><p>${E(a.message)}</p></div><button type="button" class="secondary" data-action="check-agent">${icon('retry')}检查连接</button></div>${a.probe==='passed' ? '<p class="saved-mark">网页提交 → Agent 接收 → 回传进度，连接自检已通过。</p>' : ['pending','claimed'].includes(a.probe) ? '<p class="form-help">连接自检中，正在等待 Agent 回传…</p>' : ''}${a.state !== 'connected' ? `<div class="inline-note"><strong>只需在 Agent 发送一次这句话</strong><p style="margin:8px 0 12px">${E(a.instruction)}</p><button type="button" class="secondary" data-action="copy-agent">复制连接指令 ${icon('text')}</button> ${a.host==='workbuddy'?`<button type="button" class="text-button" data-action="open-workbuddy">打开 WorkBuddy ${icon('arrow-up-right')}</button>`:''}<p style="margin:10px 0 0">Agent 接上后，这里自动变为已连接。之后直接在网页点“开始制作”。</p></div>` : ''}`;
 }
+function personVoice(person, editor=false) {
+  const voice=person.voiceTraining;
+  if(!voice)return '';
+  if(person.speaker){
+    const id=person.custom_speaker_id||person.speaker;
+    return `<p class="form-help" role="status">${voice.message==='复刻完成，音色 ID 已自动填写'?'复刻完成 · ':''}音色 ID <code>${E(id)}</code></p>`;
+  }
+  const active=['queued','checking','submitting','training'].includes(voice.state);
+  const text=voice.message||(voice.canQuery?'有复刻记录，可以继续查询。':voice.hasSample?'录音已保存，可以开始复刻。':'请上传录音或填写已有音色 ID。');
+  const action=voice.canQuery?'继续查询':'开始复刻';
+  return `<div class="person-voice">
+    <p class="${voice.state==='failed'?'inline-error':'form-help'}" role="status">${E(text)}</p>
+    <div class="person-voice-actions">
+      ${editor&&voice.canUpload?`<input type="file" id="person-voice-file" data-person="${E(person.id)}" accept=".wav,.mp3,.m4a,.aac,.flac,.ogg" hidden><button type="button" class="secondary" data-action="pick-voice-sample">${icon('plus')} ${voice.hasSample?'更换录音':'上传录音'}</button>`:''}
+      ${voice.canStart&&!active?`<button type="button" class="secondary" data-action="start-voice-training" data-id="${E(person.id)}">${action}</button>`:''}
+    </div>
+    ${editor&&voice.canStart&&!voice.canQuery&&!active?'<p class="form-help">开始复刻会将录音发送到火山语音服务。</p>':''}
+  </div>`;
+}
+function personReadiness(person) {
+  const status=person.voiceTraining?.state;
+  const active=['queued','checking','submitting','training'].includes(status);
+  return badge(person.ready?'已就绪':active?'复刻进行中':'待绑定音色',person.ready?'':'warn');
+}
+function paintVoiceUpdates(previousPeople) {
+  const previous=new Map(previousPeople.map(person=>[person.id,person]));
+  for(const person of state.config.people){
+    const prior=previous.get(person.id);
+    if(prior&&JSON.stringify([prior.voiceTraining,prior.speaker,prior.custom_speaker_id])===JSON.stringify([person.voiceTraining,person.speaker,person.custom_speaker_id]))continue;
+    const suffix=CSS.escape(person.id);
+    const voice=$(`[data-person-voice="${suffix}"]`);
+    const badgeSlot=$(`[data-person-ready="${suffix}"]`);
+    if(voice)voice.innerHTML=personVoice(person);
+    if(badgeSlot)badgeSlot.innerHTML=personReadiness(person);
+    if(person.id!==editPerson||!$('#person-voice-editor'))continue;
+    $('#person-voice-editor').innerHTML=personVoice(person,true);
+    if(person.speaker){
+      const speaker=$('#person-speaker'), custom=$('#custom-speaker');
+      if(speaker.value===(prior?.speaker||''))speaker.value=person.speaker;
+      if(custom.value===(prior?.custom_speaker_id||''))custom.value=person.custom_speaker_id||'';
+    }
+  }
+}
+async function uploadPersonVoice(input) {
+  const file=input.files[0];if(!file)return;
+  const ident=input.dataset.person;
+  const button=input.nextElementSibling;
+  await busy(button,async()=>{
+    try {
+      const response=await fetch(`/api/people/${encodeURIComponent(ident)}/voice-sample?name=${encodeURIComponent(file.name)}`,{
+        method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});
+      const result=await response.json();if(!response.ok)throw new Error(result.error);
+      await refresh();notify('录音已保存');
+    } catch(error) {notify(error.message,true);}
+    finally {input.value='';}
+  });
+}
 function renderPeople() {
-  main.innerHTML = `${heading('每条视频，都有自己的主角。','照片、音色和社媒署名绑定在一起，选好人物就能直接制作。',`<button class="secondary" data-action="add-person">${icon('plus')} 添加数字人</button>`)}<div class="people-grid">${state.config.people.map(p => `<article class="person-card"><div class="portrait-area">${p.hasPortrait ? `<img src="/media/person/${E(p.id)}" alt="${E(p.name)}的数字人照片">` : ''}${p.isDefault ? badge('默认出镜') : ''}</div><div class="person-card-content"><h2>${E(p.name)} ${badge(p.ready ? '已就绪' : '待绑定音色',p.ready ? '' : 'warn')}</h2><p>${E(p.social_media_name || '还没有设置社媒署名')}<br>${p.speaker ? '已绑定专属音色' : p.sample ? '已有声音样本 · 待复刻' : '添加音色 ID 或声音样本'}</p><button class="secondary" data-action="edit-person" data-id="${E(p.id)}">编辑人物资料 ${icon('arrow-right')}</button></div></article>`).join('')}<button class="add-person" data-action="add-person">${icon('plus')}<strong>添加一位新数字人</strong><small>一张照片，一段声音。<br>让更多人替你讲述。</small></button></div><div id="person-editor">${editPerson !== undefined ? personEditor() : ''}</div>`;
+  main.innerHTML = `${heading('每条视频，都有自己的主角。','照片、音色和社媒署名绑定在一起，选好人物就能直接制作。',`<button class="secondary" data-action="add-person">${icon('plus')} 添加数字人</button>`)}<div class="people-grid">${state.config.people.map(p => `<article class="person-card"><div class="portrait-area">${p.hasPortrait ? `<img src="/media/person/${E(p.id)}" alt="${E(p.name)}的数字人照片">` : ''}${p.isDefault ? badge('默认出镜') : ''}</div><div class="person-card-content"><h2>${E(p.name)} <span data-person-ready="${E(p.id)}">${personReadiness(p)}</span></h2><p>${E(p.social_media_name || '还没有设置社媒署名')}</p><div data-person-voice="${E(p.id)}">${personVoice(p)}</div><button class="secondary" data-action="edit-person" data-id="${E(p.id)}">编辑人物资料 ${icon('arrow-right')}</button></div></article>`).join('')}<button class="add-person" data-action="add-person">${icon('plus')}<strong>添加一位新数字人</strong><small>一张照片，一段声音。<br>让更多人替你讲述。</small></button></div><div id="person-editor">${editPerson !== undefined ? personEditor() : ''}</div>`;
   bindPerson();
 }
 let personFolder = '';
 function personEditor() {
   const p = state.config.people.find(p => p.id === editPerson);
-  return `<section class="panel editor-panel"><div class="editor-heading"><h2>${p ? '编辑 ' + E(p.name) : '添加一个数字人'}</h2><button data-action="close-editor" aria-label="关闭人物编辑">${icon('close')}</button></div><form id="person-form">${!p ? `<div class="form-group"><div class="label-row"><label>照片与声音样本</label><button type="button" class="text-button" data-action="import-person">导入文件夹 ${icon('arrow-up-right')}</button></div><button type="button" class="source-select" data-action="pick-person"><span class="source-icon">${icon('person')}</span><span class="source-content"><strong>${E(personFolder ? personFolder.split('/').filter(Boolean).pop() : '选择人物文件夹')}</strong><small>每个文件夹一张正面照片，可选一段干净的单人录音</small></span>${icon('plus')}</button><input class="input" name="folder" value="${E(personFolder)}" placeholder="也可以粘贴本地文件夹路径" style="margin-top:10px"></div>` : `<input type="hidden" name="id" value="${E(p.id)}">`}<div class="form-row"><div class="form-group"><label class="field-label" for="person-name" style="margin-bottom:10px">人物名称</label><input id="person-name" name="name" class="input" value="${E(p?.name)}" placeholder="例如：小林" ${p ? 'required' : ''}></div><div class="form-group"><label class="field-label" for="person-social" style="margin-bottom:10px">社媒署名</label><input id="person-social" name="social_media_name" class="input" value="${E(p?.social_media_name)}" placeholder="例如：小林带你看养老" required></div></div><div class="form-group"><label class="field-label" for="person-speaker" style="margin-bottom:10px">已有音色 ID<span class="optional">有音色直接填写；没有可留空</span></label><input id="person-speaker" name="speaker" class="input" value="${E(p?.speaker)}" placeholder="例如：S_xxxxxxxx"><p class="form-help">只有录音时，保存后请助手单独发起音色复刻。成功后音色会自动绑定，再开始制作。</p></div><details class="form-group"><summary class="field-label">自定义音色与语速<span class="optional">高级选项</span></summary><div class="form-row" style="margin-top:15px"><div class="form-group"><label class="field-label" for="custom-speaker">自定义音色 ID</label><input class="input" id="custom-speaker" name="custom_speaker_id" value="${E(p?.custom_speaker_id)}" placeholder="speaker 为 custom_speaker_id 时填写"></div><div class="form-group"><label class="field-label" for="speech-rate">语速参数</label><input class="input" type="number" min="-50" max="100" id="speech-rate" name="speech_rate" value="${p?.speech_rate ?? -3}"><p class="form-help">0 为标准速度，负数稍慢，正数稍快。</p></div></div></details><div class="switch-row"><label for="person-default">设为默认出镜人物</label><input class="switch" type="checkbox" name="default" id="person-default" ${p?.isDefault || !state.config.people.length ? 'checked' : ''}></div><div id="person-error" class="inline-error error-slot" role="alert"></div><button class="primary" type="submit" style="margin-top:16px">${icon('save')} 保存人物资料</button></form></section>`;
+  return `<section class="panel editor-panel"><div class="editor-heading"><h2>${p ? '编辑 ' + E(p.name) : '添加一个数字人'}</h2><button data-action="close-editor" aria-label="关闭人物编辑">${icon('close')}</button></div><form id="person-form">${!p ? `<div class="form-group"><div class="label-row"><label>照片与声音样本</label><button type="button" class="text-button" data-action="import-person">导入文件夹 ${icon('arrow-up-right')}</button></div><button type="button" class="source-select" data-action="pick-person"><span class="source-icon">${icon('person')}</span><span class="source-content"><strong>${E(personFolder ? personFolder.split('/').filter(Boolean).pop() : '选择人物文件夹')}</strong><small>每个文件夹一张正面照片，可选一段干净的单人录音</small></span>${icon('plus')}</button><input class="input" name="folder" value="${E(personFolder)}" placeholder="也可以粘贴本地文件夹路径" style="margin-top:10px"></div>` : `<input type="hidden" name="id" value="${E(p.id)}">`}<div class="form-row"><div class="form-group"><label class="field-label" for="person-name" style="margin-bottom:10px">人物名称</label><input id="person-name" name="name" class="input" value="${E(p?.name)}" placeholder="例如：小林" ${p ? 'required' : ''}></div><div class="form-group"><label class="field-label" for="person-social" style="margin-bottom:10px">社媒署名</label><input id="person-social" name="social_media_name" class="input" value="${E(p?.social_media_name)}" placeholder="例如：小林带你看养老" required></div></div><div class="form-group"><label class="field-label" for="person-speaker" style="margin-bottom:10px">音色 ID<span class="optional">有音色直接填写；没有可留空</span></label><input id="person-speaker" name="speaker" class="input" value="${E(p?.speaker)}" placeholder="例如：S_xxxxxxxx"><p class="form-help">复刻成功后会自动填入音色 ID。</p></div>${p?`<div id="person-voice-editor" class="form-group">${personVoice(p,true)}</div>`:'<p class="form-help">人物保存后可以上传录音并开始复刻。</p>'}<details class="form-group"><summary class="field-label">自定义音色与语速<span class="optional">高级选项</span></summary><div class="form-row" style="margin-top:15px"><div class="form-group"><label class="field-label" for="custom-speaker">自定义音色 ID</label><input class="input" id="custom-speaker" name="custom_speaker_id" value="${E(p?.custom_speaker_id)}" placeholder="speaker 为 custom_speaker_id 时填写"></div><div class="form-group"><label class="field-label" for="speech-rate">语速参数</label><input class="input" type="number" min="-50" max="100" id="speech-rate" name="speech_rate" value="${p?.speech_rate ?? -3}"><p class="form-help">0 为标准速度，负数稍慢，正数稍快。</p></div></div></details><div class="switch-row"><label for="person-default">设为默认出镜人物</label><input class="switch" type="checkbox" name="default" id="person-default" ${p?.isDefault || !state.config.people.length ? 'checked' : ''}></div><div id="person-error" class="inline-error error-slot" role="alert"></div><button class="primary" type="submit" style="margin-top:16px">${icon('save')} 保存人物资料</button></form></section>`;
 }
 function bindPerson() {
   const form = $('#person-form'); if (!form) return;
@@ -409,6 +466,8 @@ document.addEventListener('click', async e=>{
     if(action==='add-person'){editPerson=null;personFolder='';renderPeople();$('#person-editor').scrollIntoView({block:'start',behavior:'smooth'});}
     if(action==='edit-person'){editPerson=button.dataset.id;renderPeople();$('#person-editor').scrollIntoView({block:'start',behavior:'smooth'});}
     if(action==='close-editor'){editPerson=undefined;renderPeople();}
+    if(action==='pick-voice-sample')$('#person-voice-file')?.click();
+    if(action==='start-voice-training')await busy(button,async()=>{await api(`/api/people/${encodeURIComponent(button.dataset.id)}/voice-training`,{});await refresh();});
     if(action==='filter'){worksFilter=button.dataset.filter;renderWorks();}
     if(action==='start-task')await busy(button,async()=>{await api(`/api/tasks/${button.dataset.id}/start`,{});await refresh(false);renderTask();});
     if(action==='cancel-task')await busy(button,async()=>{await api(`/api/tasks/${button.dataset.id}/cancel`,{});await refresh(false);renderTask();notify('停止请求已提交，已有制作文件会保留');});
@@ -416,6 +475,7 @@ document.addEventListener('click', async e=>{
   }catch(err){notify(err.message,true);}
 });
 $('#folder-upload').addEventListener('change',e=>importFolder(e.target.files));
+document.addEventListener('change',e=>{if(e.target.id==='person-voice-file')uploadPersonVoice(e.target);});
 window.addEventListener('hashchange',()=>{render();window.scrollTo({top:0});});
 async function refresh(paint=true) {
   const old=state;state=await api('/api/state');

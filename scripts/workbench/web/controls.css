@@ -68,3 +68,8 @@ summary,.per-video-preferences summary,.publication-edit summary,.cover-photo-se
 }
 .settings-service-heading h3 { margin: 0; font-size: clamp(15px, 1.05vw, 18px); }
 .settings-service-heading .settings-links { margin: 0; }
+
+.person-voice { display: grid; gap: 10px; margin: 12px 0; }
+.person-voice p { margin: 0; }
+.person-voice-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.person-card-content code { overflow-wrap: anywhere; }

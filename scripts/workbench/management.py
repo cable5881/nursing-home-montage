@@ -99,6 +99,9 @@ class Management:
             return '当前有任务正在使用这家机构的资料'
         cfg = self.app.pc.load()
         if kind == 'person':
+            training = getattr(self.app, 'voice_training', None)
+            if training and training.active(ident):
+                return '这位数字人正在复刻音色，请等待结果。'
             owned=self.app.pc.directory()/'people'/ident if hasattr(self.app.pc,'directory') else None
             if owned:
                 for other,value in cfg.get('people',{}).items():

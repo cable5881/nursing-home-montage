@@ -124,9 +124,11 @@ class App:
         from planning import BatchPlanning
         from channel import AgentChannel
         from model_api import ModelSettings
+        from voice_training import VoiceTraining
         self.planning=BatchPlanning(self,read,write)
         self.channel=AgentChannel(self,read,write)
         self.models=ModelSettings(self,read,write)
+        self.voice_training=VoiceTraining(self,read,write,run_command)
         from music_library import MusicLibrary
         self.music = MusicLibrary(self, read, write, run_command)
         from video_edits import VideoEdits
@@ -209,7 +211,8 @@ class App:
         keys = self.pc.connection_keys(c)
         people = []
         for ident, p in cfg["people"].items():
-            people.append({k: p.get(k) for k in ("name", "social_media_name", "speaker", "custom_speaker_id", "status", "speech_rate", "connection", "sample")} | {"id": ident, "ready": bool(p.get("speaker") and self.pc.asset_path(p.get("portrait")) and self.pc.asset_path(p.get("portrait")).is_file()), "hasPortrait": bool(p.get("portrait")), "isDefault": ident == cfg.get("default_person")})
+            voice_training = self.voice_training.public({**p, 'id': ident})
+            people.append({k: p.get(k) for k in ("name", "social_media_name", "speaker", "custom_speaker_id", "status", "speech_rate", "connection", "sample")} | {"id": ident, "ready": bool(p.get("speaker") and self.pc.asset_path(p.get("portrait")) and self.pc.asset_path(p.get("portrait")).is_file()), "hasPortrait": bool(p.get("portrait")), "isDefault": ident == cfg.get("default_person"), "voiceTraining": voice_training})
         storage = self.pc.storage_settings(c.get("storage"))
         return {"project": str(self.project), "version": (self.skill / "VERSION").read_text().strip(), "people": people, "defaultPerson": cfg.get("default_person"), "connection": {"speech": bool(keys[0]), "ak": bool(keys[1]), "sk": bool(keys[2]), "storage": storage, "cloneMode": c.get("clone_mode", ""), "speakerPool": c.get("speaker_pool", [])}, "preferences": {"music": cfg.get("settings", {}).get("music", {}).get("enabled", True), "coverHeader": cfg.get("settings", {}).get("cover", {}).get("header_text", "")}, "agent": self.agent_state(), "model": self.models.public(), "phases": PHASES, "onboarded": read(self.data / "preferences.json", {}).get("onboarded", False)}
 
@@ -277,7 +280,7 @@ class App:
         return self.config()
 
     def save_person(self, values):
-        with self.lock:
+        with self.transaction():
             ident = values.get("id")
             if not ident:
                 folder = Path(values.get("folder", "")).expanduser().resolve()
@@ -292,6 +295,8 @@ class App:
             cfg = self.pc.load()
             if ident not in cfg["people"]:
                 raise ValueError("人物不存在")
+            if values.get('speaker') and self.voice_training.active(ident):
+                raise ValueError('音色复刻进行中，请等结果返回后再修改音色 ID。')
             name = str(values.get("name", cfg["people"][ident]["name"])).strip()
             if not name:
                 raise ValueError("请填写人物名称")
@@ -600,6 +605,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.upload(parse_qs(url.query))
             if url.path == '/api/music/upload':
                 return self.upload_music(parse_qs(url.query))
+            match = re.fullmatch(r'/api/people/([A-Za-z0-9_-]{1,80})/voice-sample', url.path)
+            if match:
+                return self.upload_voice_sample(match[1], parse_qs(url.query))
             if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                 raise ValueError("请求格式错误")
             length = int(self.headers.get("Content-Length", 0))
@@ -669,6 +677,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, check(self.app, v))
             if url.path == "/api/people":
                 return self.reply(200, self.app.save_person(v))
+            match = re.fullmatch(r'/api/people/([A-Za-z0-9_-]{1,80})/voice-training', url.path)
+            if match:
+                return self.reply(202, self.app.voice_training.start(match[1]))
             if url.path == "/api/scan":
                 return self.reply(200, self.app.scan(v.get("folder", "")))
             if url.path == "/api/pick-folder":
@@ -713,6 +724,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(400, {"error": self.app.redact(str(e))})
         except Exception as e:
             return self.reply(500, {"error": self.app.redact(str(e))[:500]})
+
+    def upload_voice_sample(self, ident, q):
+        from voice_training import MAX_AUDIO_BYTES
+        length = int(self.headers.get('Content-Length', 0))
+        if self.headers.get('Content-Type', '').split(';')[0] != 'application/octet-stream' or not 0 < length <= MAX_AUDIO_BYTES:
+            raise ValueError('录音文件须大于 0 且不超过 10 MB。')
+        data = self.rfile.read(length)
+        if len(data) != length:
+            raise ValueError('录音上传中断，请重试。')
+        return self.reply(201, self.app.voice_training.attach(ident, q.get('name', [''])[0], data))
 
     def upload_music(self,q):
         from music_library import AUDIO, MAX_BYTES
@@ -900,6 +921,7 @@ def main():
         while True:
             try:
                 app.queue.process_inbox();app.queue.reconcile();app.queue.launch_local();app.acceptance.tick();app.archive.tick()
+                app.voice_training.tick()
                 coordinator.tick()
                 last_error=None
             except Exception as exc:
