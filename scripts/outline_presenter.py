@@ -51,7 +51,7 @@ try:
             biggest=1+np.argmax(stats[1:,cv2.CC_STAT_AREA]);mask=np.where(labels==biggest,255,0).astype(np.uint8)
         mask=cv2.morphologyEx(mask,cv2.MORPH_CLOSE,np.ones((3,3),np.uint8))
         # Offset the contour outwards so dashes sit off the hair and jacket.
-        wide=cv2.dilate(np.pad(mask,((pad,pad),(pad,pad))),cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(7,7)))
+        wide=cv2.dilate(np.pad(mask,((pad,pad),(pad,pad))),cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(13,13)))
         contours,_=cv2.findContours(wide,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)
         line=Image.new('RGBA',(W,H),(0,0,0,0));draw=ImageDraw.Draw(line)
         if contours:
@@ -63,7 +63,7 @@ try:
                 ends=np.arange(at,min(at+9,dist[-1])+.01,1.2)
                 xx=np.interp(ends,dist,points[:,0]);yy=np.interp(ends,dist,points[:,1])
                 xy=[(float(x),float(y)) for x,y in zip(xx,yy) if y<H-46]
-                if len(xy)>1:draw.line(xy,fill=(255,255,255,105),width=1)
+                if len(xy)>1:draw.line(xy,fill=(255,255,255,245),width=2)
         actor=Image.new('RGBA',(W,H));actor.paste(Image.fromarray(rgba),(pad,pad))
         composed=Image.alpha_composite(line,actor)
         arr=np.array(composed)
@@ -79,6 +79,6 @@ finally:
 assert dc==0,derr
 assert ec==0,eerr
 assert frames>=math.floor(opts.min_seconds*30),frames
-report={'source':str(src),'output':str(OUT/'avatar-outlined.webm'),'frames':frames,'fps':30,'size':[W,H],'cropSource':[cx,cy,cw,ch],'alphaCoverageRange':[min(alpha_stats),max(alpha_stats)],'method':'edge-only purple spill suppression, low-opacity narrow contour and smooth bottom alpha fade; opaque face pixels and speech timing unchanged'}
+report={'source':str(src),'output':str(OUT/'avatar-outlined.webm'),'frames':frames,'fps':30,'size':[W,H],'cropSource':[cx,cy,cw,ch],'alphaCoverageRange':[min(alpha_stats),max(alpha_stats)],'method':'edge-only purple spill suppression, bright offset dashed white contour and smooth bottom alpha fade; opaque face pixels and speech timing unchanged'}
 (OUT/'outline-verification.json').write_text(json.dumps(report,ensure_ascii=False,indent=2), encoding='utf-8')
 print(json.dumps(report,ensure_ascii=False,indent=2))

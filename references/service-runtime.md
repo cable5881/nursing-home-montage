@@ -18,7 +18,7 @@ run.json至少保存text、config.tts、tts.file、qa_status、task_id；视频�
 
 完整旁白先生成，再以本地medium做独立内容和词级核验。出现差异时读取runs/voice/audio-check.json与alignment-check.json，修正发音或取得实际独立核验依据；不能猜测略过漏字。声音复刻使用V3 voice_clone/get_voice，训练和每条语音合成是不同操作；新训练不会覆盖其他人物槽位。
 
-provider-video.mp4是接口原片，digital-human.mp4是核验回传音频对齐后的视频。相关性须≥0.95、偏移≤80ms才换轨；叠加视频静音，完整旁白只播放一次。查看实际首中尾帧后记录provider review。抠像、描边与底缘渐隐是本地后处理，保持原声语速。
+provider-video.mp4是接口原片，digital-human.mp4是核验回传音频对齐后的视频。相关性须≥0.95、偏移≤80ms才换轨；叠加视频静音，完整旁白只播放一次。查看实际首中尾帧后记录provider review。抠像、描边与底缘渐隐是本地后处理，保持原声语速。正文人物用外扩的亮白虚线，头发和肩部留出间距，底部渐隐。
 
 ## 缓存与恢复
 
