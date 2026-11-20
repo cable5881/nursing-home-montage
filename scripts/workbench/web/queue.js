@@ -21,11 +21,12 @@ renderCreate=function(){
   f.onsubmit=async e=>{e.preventDefault();$('#create-error').textContent='';capturePreferences();await busy(f.querySelector('[type=submit]'),async()=>{try{const selected=chosen();if(!selected.length)throw new Error('请选择至少一位出镜数字人');const values={...Object.fromEntries(new FormData(f)),people:selected,person:selected[0].id,count:slots.length,music:f.elements.music.checked,videoPreferences:slots.map(x=>preferenceMap[x.key]||'')};await api('/api/draft',{...values,videoPreferenceMap:preferenceMap});const task=await api('/api/tasks',values);await api('/api/tasks/'+task.id+'/start',{});await refresh(false);setRoute('task/'+task.id);}catch(err){$('#create-error').textContent=err.message;}});};
 };
 function queueButton(row,options={}){
-  if(['completed','cancelled'].includes(row.status)&&row.settled)return '';
+  if(row.stopReason==='timeout'&&!row.settled)return '<span class="subtle">超时，等待执行者退出</span>';
+  if(['completed','cancelled','timed_out'].includes(row.status)&&row.settled)return '';
   const atHead=row.id===state.queue.headId;
   const inspect=options.inspect!==false&&!row.settled&&atHead?`<button class="text-button" data-action="inspect-progress" data-id="${row.id}">查看状态诊断</button>`:'';
   const cancel=`<button class="text-button" data-action="queue-cancel" data-id="${row.id}">${row.settled?'取消此条':'请求停止'}</button>`;
-  if(['completed','stopping','cancelled'].includes(row.status)){
+  if(['completed','stopping','cancelled','timed_out'].includes(row.status)){
     const cancelling=['stopping','cancelled'].includes(row.status);
     const pending=row.recoveryRequested;
     const confirm=atHead&&row.kind==='video'&&!row.settled?`<button class="text-button" data-action="queue-recover" data-id="${row.id}" ${pending?'disabled':''}>${pending?'已请求，等待 Agent 确认':'请求确认结束'}</button>`:'';
@@ -37,6 +38,7 @@ function queueButton(row,options={}){
   return row.status==='queued'?`<button class="text-button" data-action="queue-cancel" data-id="${row.id}">取消排队</button>`:cancel+inspect;
 }
 function queueStatusLabel(row){
+  if(row.stopReason==='timeout'&&!row.settled)return '超时，正在停止';
   if(!row.settled&&['cancelled','stopping'].includes(row.status))return '取消中';
   if(!row.settled&&row.status==='completed')return '待结束确认';
   return statusLabels[row.status]||row.status;
@@ -142,9 +144,9 @@ eventLog = function(t) {
   return eventLogBeforeQueue({...t, events:t.events.map(e=>({...e, message:e.message.replace(/^本批 (\d+) 条已进入队尾，序号 \d+[–-]\d+$/, '本批 $1 条已进入队尾，将按提交顺序制作')}))});
 };
 const taskCurrentBeforeQueue=taskCurrent;
-taskCurrent=function(t){if(t.queueItems?.length&&['queued','partial','cancelled'].includes(t.status)){const label=t.status==='queued'?'已排队，等待按顺序开始':t.status==='partial'?'本批已结束，完成的作品已保留':'本次制作已停止';return `<div class="current-step"><span>${icon(t.status==='partial'?'check':'clapper')}</span><div><h2>${label}</h2><p>${E(t.message)}</p></div></div>`;}return taskCurrentBeforeQueue(t);};
+taskCurrent=function(t){if(t.queueItems?.length&&['queued','partial','cancelled','timed_out'].includes(t.status)){const label=t.status==='queued'?'已排队，等待按顺序开始':t.status==='partial'?'本批已结束，完成的作品已保留':'本次制作已停止';return `<div class="current-step"><span>${icon(t.status==='partial'?'check':'clapper')}</span><div><h2>${label}</h2><p>${E(t.message)}</p></div></div>`;}return taskCurrentBeforeQueue(t);};
 const taskBeforeQueue=renderTask;
-renderTask=function(){taskBeforeQueue();const t=state.tasks.find(x=>x.id===selectedTask);if(!t?.queueItems?.length)return;const stageArea=$('#task-stages');if(['partial','cancelled'].includes(t.status))stageArea.hidden=true;else if(t.status==='queued'&&t.queueItems.every(x=>!x.phase))stageArea.innerHTML=stages(-1,false);stageArea.insertAdjacentHTML('afterend',batchItems(t));if(t.status==='needs_input'){const question=document.createElement('section');question.className='panel queue-question-panel';question.append($('#task-current'),$('#task-controls'));stageArea.before(question);}};
+renderTask=function(){taskBeforeQueue();const t=state.tasks.find(x=>x.id===selectedTask);if(!t?.queueItems?.length)return;const stageArea=$('#task-stages');if(['partial','cancelled','timed_out'].includes(t.status))stageArea.hidden=true;else if(t.status==='queued'&&t.queueItems.every(x=>!x.phase))stageArea.innerHTML=stages(-1,false);stageArea.insertAdjacentHTML('afterend',batchItems(t));if(t.status==='needs_input'){const question=document.createElement('section');question.className='panel queue-question-panel';question.append($('#task-current'),$('#task-controls'));stageArea.before(question);}};
 const refreshBeforeQueue=refresh;
 refresh=async function(paint=true){
   const oldQueue=state?.queue, oldAgent=state?.config.agent, open=$('.queue-next')?.open;

@@ -2,10 +2,12 @@
 import os
 from pathlib import Path
 import threading
+import time
 import uuid
 
 from auto_editor import Editor, NeedsInput, PlanError, approved, source_evidence
-from pipeline import Pipeline, fingerprint
+from model_api import ModelClient
+from pipeline import Pipeline, PreparationTimeout, fingerprint
 from planning import digest
 
 
@@ -77,10 +79,15 @@ class Production:
         return self.app.queue.item(self.item)
 
     def checkpoint(self):
+        self.app.queue.expire_head()
         row = self.status()
         if row['status'] == 'stopping':
             self.app.queue.report(self.item, self.lease, min(5, row['phase']), 'running', '已到停止检查点')
         self.pipe.row(self.item, self.lease)
+
+    def time_budget(self, maximum):
+        self.checkpoint()
+        return max(.001, min(maximum, self.status().get('deadline', float('inf')) - time.time()))
 
     def terminal(self, status, note, question=None):
         row = self.status()
@@ -89,7 +96,7 @@ class Production:
         try:
             self.app.queue.report(self.item, self.lease, min(5, row['phase']), status, note, question)
         except ValueError:
-            if self.status()['status'] != 'cancelled':
+            if self.status()['status'] not in ('cancelled', 'timed_out'):
                 raise
 
     def progress(self, message):
@@ -97,8 +104,15 @@ class Production:
         self.app.queue.report(self.item, self.lease, min(5, row['phase']), 'running', message)
 
     def invoke(self, action, *, job=None, cli_args=None, extra=None):
-        self.checkpoint()
-        code, result = self.pipe.invoke(self.row, self.lease, action, extra=extra, job=job, cli_args=cli_args)
+        for attempt in range(2):
+            self.checkpoint()
+            try:
+                code, result = self.pipe.invoke(self.row, self.lease, action, extra=extra, job=job, cli_args=cli_args)
+                break
+            except PreparationTimeout:
+                if attempt or action != 'inventory':
+                    raise
+                self.progress('素材准备超时，正在从现有文件自动重试（1/1）')
         if code:
             raise StageError(str(result.get('error') or result))
         return result
@@ -111,7 +125,12 @@ class Production:
             self.app.planning.append_facts(task, folder)
 
     def execute(self):
-        self.editor = Editor(self.app.skill, self.app.models.client(), self.read, self.write, self.checkpoint)
+        client = self.app.models.client()
+        if isinstance(client, ModelClient):
+            client.time_budget = self.time_budget
+            client.on_retry = self.progress
+        self.editor = Editor(self.app.skill, client, self.read, self.write, self.checkpoint)
+        self.editor.time_budget = self.time_budget
         task = self.app.task(self.row['taskId'])
         answer = {'question': self.row.get('answerQuestion'), 'reply': self.row.get('answer')}
         if self.row['kind'] == 'planning':
@@ -285,6 +304,7 @@ class Production:
         try:
             evidence, note = self.editor.review_frames(self.job, frames, instructions, answer, findings=findings)
         except (OSError, ValueError) as exc:
+            self.checkpoint()
             self.pipe.visual_advice(self.item, self.lease, name, findings,
                                     unavailable=self.app.redact(str(exc))[:600])
         else:

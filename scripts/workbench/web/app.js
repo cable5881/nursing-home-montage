@@ -36,8 +36,8 @@ let state, route = 'create', selectedTask, editPerson, worksFilter = 'all', uplo
 let createDraft = {};
 const main = $('#main');
 const labels = {create:'制作工作台', works:'我的作品', people:'我的数字人', settings:'服务设置', onboarding:'首次使用指南', task:'制作详情', preview:'成品预览'};
-const statusLabels = {draft:'待开始', queued:'等待接手', running:'制作中', needs_input:'需要补充', failed:'执行中断', interrupted:'可继续', cancelled:'已停止', stopping:'正在停止', completed:'已完成'};
-function statusClass(status) { return status === 'completed' ? '' : ['needs_input','interrupted','queued','draft','stopping'].includes(status) ? 'warn' : ['failed','cancelled'].includes(status) ? 'error' : 'neutral'; }
+const statusLabels = {draft:'待开始', queued:'等待接手', running:'制作中', needs_input:'需要补充', failed:'执行中断', interrupted:'可继续', cancelled:'已停止', timed_out:'制作超时', stopping:'正在停止', completed:'已完成'};
+function statusClass(status) { return status === 'completed' ? '' : ['needs_input','interrupted','queued','draft','stopping'].includes(status) ? 'warn' : ['failed','cancelled','timed_out'].includes(status) ? 'error' : 'neutral'; }
 function badge(text, cls = '') { return `<span class="badge ${cls}">${E(text)}</span>`; }
 function notify(message, error = false) { const el = $('#toast'); clearTimeout(toastTimer); el.textContent = message; el.classList.toggle('error', error); el.hidden = false; toastTimer = setTimeout(() => el.hidden = true, error ? 6500 : 3800); }
 async function api(path, data, options = {}) {
@@ -153,6 +153,11 @@ function modelSettings() {
       </fieldset>
     </details>
     <div class="switch-row"><label for="model-enabled">启用独立制作</label><input id="model-enabled" name="model_enabled" class="switch" type="checkbox" ${model.enabled?'checked':''} ${model.canEnable?'':'disabled'}></div>
+    <div class="form-group">
+      <label class="field-label" for="production-timeout">单条制作时限（分钟）</label>
+      <input class="input" id="production-timeout" name="production_timeout" type="number" min="1" step="1" required value="${E(model.productionTimeoutMinutes)}">
+      <p class="form-help">从接单开始计时，超时停止该条并保留已有文件。</p>
+    </div>
     ${model.canEnable?'':'<p class="form-help">启用前请用项目启动器独立打开工作台。</p>'}
     <p class="form-help">独立制作会向所选平台发送必要的机构说明和审核抽帧。连接测试只发送一张合成色块图。</p>
     ${serviceTestControl('model','测试模型连接')}
@@ -229,7 +234,8 @@ function productionServiceSettings(config) {
 function modelFields(form) {
   return {provider:form.elements.model_provider.value,model:form.elements.model_id.value,
           baseUrl:form.elements.model_base_url.value,outputMode:form.elements.model_output_mode.value,
-          apiKey:form.elements.model_key.value,enabled:form.elements.model_enabled.checked};
+          apiKey:form.elements.model_key.value,enabled:form.elements.model_enabled.checked,
+          productionTimeoutMinutes:form.elements.production_timeout.valueAsNumber};
 }
 function bindServiceSettings(form) {
   const model = state.config.model;

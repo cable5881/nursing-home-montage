@@ -1,11 +1,13 @@
 """Model endpoints and project-local credentials for independent production."""
 import base64
+import http.client
 import ipaddress
 import json
 import os
 import re
 import secrets
 import struct
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -82,6 +84,10 @@ class ModelResponseError(ValueError):
     pass
 
 
+class ModelConnectionError(ValueError):
+    pass
+
+
 class ModelClient:
     def __init__(self, name, model, key, base_url=None, output_mode='json'):
         self.name = name
@@ -89,6 +95,8 @@ class ModelClient:
         self.key = key
         self.endpoint = (base_url or provider(name)['baseUrl']) + CHAT_PATH
         self.output_mode = output_mode
+        self.time_budget = lambda maximum: maximum
+        self.on_retry = None
         self.token_field = ('max_completion_tokens' if urllib.parse.urlsplit(self.endpoint).hostname == 'api.openai.com'
                             else 'max_tokens')
         handlers = [NoRedirect()]
@@ -111,9 +119,21 @@ class ModelClient:
             body['thinking'] = {'type': 'disabled'}
         req = urllib.request.Request(self.endpoint, json.dumps(body, ensure_ascii=False).encode('utf-8'),
                                      {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + self.key})
+        for attempt in range(3):
+            try:
+                return self.request(req)
+            except (ModelConnectionError, ModelResponseError) as exc:
+                if attempt == 2:
+                    raise
+                if self.on_retry:
+                    self.on_retry(f'{exc} 正在自动重试（{attempt + 1}/2）')
+                time.sleep(self.time_budget(2 ** attempt))
+
+    def request(self, req):
         try:
-            with self.opener.open(req, timeout=150) as response:
+            with self.opener.open(req, timeout=self.time_budget(150)) as response:
                 raw = response.read(2_000_001)
+            self.time_budget(150)
         except urllib.error.HTTPError as exc:
             code = exc.code
             exc.close()
@@ -125,9 +145,10 @@ class ModelClient:
                 if self.output_mode == 'json':
                     hints[400] += '；如接口拒绝 JSON 模式，可在高级选项切换输出方式'
             hint = hints.get(code, '可稍后从工作台重试')
-            raise ValueError(f'模型服务返回 HTTP {code}，{hint}。') from None
-        except (OSError, urllib.error.URLError):
-            raise ValueError('模型服务连接失败，请检查网络后重试。') from None
+            error = ModelConnectionError if code in (408, 429, 500, 502, 503, 504) else ValueError
+            raise error(f'模型服务返回 HTTP {code}，{hint}。') from None
+        except (OSError, http.client.RemoteDisconnected, http.client.IncompleteRead):
+            raise ModelConnectionError('模型服务连接超时或中断。') from None
         if len(raw) > 2_000_000:
             raise ValueError('模型响应超过预期大小。')
         try:
@@ -168,6 +189,9 @@ class ModelSettings:
     def enabled(self):
         return self.stored().get('enabled') is True
 
+    def production_timeout(self):
+        return self.stored().get('productionTimeoutMinutes', 60)
+
     def key(self, name, base_url=None):
         value = self.read(self.secrets_path, {}).get(name)
         if name == 'custom':
@@ -192,6 +216,7 @@ class ModelSettings:
                                'configured': bool(self.key(name, base_url))}
         providers['custom']['outputMode'] = saved.get('customOutputMode', 'json')
         return {'enabled': self.enabled(), 'provider': saved.get('provider', 'ark'),
+                'productionTimeoutMinutes': self.production_timeout(),
                 'canEnable': self.app.service_mode == 'standalone', 'providers': providers}
 
     def inputs(self, values):
@@ -225,6 +250,9 @@ class ModelSettings:
     def save(self, values):
         with self.app.transaction():
             name, model, supplied, base_url, output_mode = self.inputs(values)
+            timeout = values.get('productionTimeoutMinutes', self.production_timeout())
+            if type(timeout) is not int or timeout < 1:
+                raise ValueError('单条制作时限请填写大于 0 的整数分钟。')
             enabled = values.get('enabled') is True
             if enabled and self.app.service_mode != 'standalone':
                 raise ValueError('请用项目独立启动器打开工作台，再启用独立制作。')
@@ -238,7 +266,8 @@ class ModelSettings:
                 secrets[name] = {'baseUrl': base_url, 'key': supplied} if name == 'custom' else supplied
                 self.write(self.secrets_path, secrets)
             saved = self.stored()
-            saved.update(enabled=enabled, provider=name, models={**saved.get('models', {}), name: model})
+            saved.update(enabled=enabled, provider=name, productionTimeoutMinutes=timeout,
+                         models={**saved.get('models', {}), name: model})
             if name == 'custom':
                 saved.update(customBaseUrl=base_url, customOutputMode=output_mode)
             self.write(self.path, saved)

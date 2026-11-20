@@ -24,6 +24,31 @@ PHASE = {'validate-plan':1, 'setup':1, 'preflight':2, 'content-review':1, 'voice
 REVIEW_ACTIONS = {'content':'review-content', 'provider':'review-provider',
                   'final':'review', 'contrast':'review-contrast'}
 
+class PreparationTimeout(ValueError):
+    pass
+
+
+def stop_process(process):
+    if sys.platform == 'win32':
+        try:
+            subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                           capture_output=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        if process.poll() is None:
+            process.kill()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=5)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    process.wait()
+
 
 def fingerprint(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -41,6 +66,7 @@ class Pipeline:
         self.invoke_override = invoke
 
     def row(self, ident, lease):
+        self.app.queue.expire_head()
         _, row = self.app.queue.checked(ident, lease)
         if row['status'] not in ('running', 'stopping'): raise ValueError('请先由当前子 Agent 领取作业')
         return row
@@ -84,20 +110,22 @@ class Pipeline:
             last_report = time.monotonic()
             deadline = last_report + 600 if action in ('inventory','revise') else None
             while process.poll() is None:
+                self.app.queue.expire_head()
                 current = self.app.queue.item(row['id'])
                 timed_out = deadline is not None and time.monotonic() >= deadline
                 if current.get('lease') != lease or current['status']!='running' or timed_out:
-                    if sys.platform!='win32':os.killpg(process.pid,signal.SIGTERM)
-                    else:process.terminate()
-                    try: process.wait(timeout=15)
-                    except subprocess.TimeoutExpired: process.kill(); process.wait()
-                    if sys.platform!='win32':
-                        try:os.killpg(process.pid,signal.SIGKILL)
-                        except ProcessLookupError:pass
+                    stop_process(process)
                     self.write(receipt,{'pid':process.pid,'state':'exited','action':action,'cancelled':True,'ended':time.time()})
-                    raise ValueError('素材准备超时，可重试原序号' if timed_out else '当前阶段已停止，云端任务 ID 与已有资产保留')
+                    if timed_out and current['status']=='running':
+                        raise PreparationTimeout('素材准备超时。')
+                    raise ValueError('当前阶段已停止，云端任务 ID 与已有资产保留')
                 if time.monotonic()-last_report >= 60:
-                    self.app.queue.report(row['id'],lease,PHASE.get(action,0),'running','仍在执行本地步骤：'+action)
+                    try:
+                        self.app.queue.report(row['id'],lease,PHASE.get(action,0),'running','仍在执行本地步骤：'+action)
+                    except ValueError:
+                        stop_process(process)
+                        self.write(receipt,{'pid':process.pid,'state':'exited','action':action,'cancelled':True,'ended':time.time()})
+                        raise
                     last_report=time.monotonic()
                 time.sleep(.5)
         self.write(receipt,{'pid':process.pid,'state':'exited','action':action,'returnCode':process.returncode,'ended':time.time()})
@@ -155,7 +183,7 @@ class Pipeline:
                 code,result=self.invoke(row,lease,step)
                 while (code==2 or result.get('pending')) and time.monotonic()+10<deadline:
                     # Poll the same registered provider task; no model round trip.
-                    time.sleep(10)
+                    time.sleep(max(0, min(10, current.get('deadline', float('inf')) - time.time())))
                     current=self.row(ident,lease)
                     if current['status']=='stopping':self.app.queue.report(ident,lease,PHASE[step],'running','已到停止检查点')
                     code,result=self.invoke(row,lease,step)

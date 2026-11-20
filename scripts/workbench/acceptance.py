@@ -7,6 +7,7 @@ import re
 import time
 import threading
 import uuid
+from job_queue import TERMINAL
 
 
 def digest(path):
@@ -29,13 +30,13 @@ class Acceptance:
         rows = self.app.queue.for_task(task['id'])
         if task['status'] not in ('completed', 'partial'):
             return False, ''
-        if rows and not all(r['status'] in ('completed', 'cancelled') and r.get('settled') for r in rows):
+        if rows and not all(r['status'] in TERMINAL and r.get('settled') for r in rows):
             return False, '等待制作完全结束并确认后验收'
-        busy = [r for r in self.app.queue.data()['items'] if r['taskId'] == task['id'] and not (r['status'] in ('completed', 'cancelled') and r.get('settled'))]
+        busy = [r for r in self.app.queue.data()['items'] if r['taskId'] == task['id'] and not (r['status'] in TERMINAL and r.get('settled'))]
         if busy:
             return False, '等待本任务的封面更新或制作结束后验收'
         for other in self.app.tasks():
-            if other.get('revisionOf', {}).get('taskId') == task['id'] and other['status'] not in ('completed', 'partial', 'cancelled'):
+            if other.get('revisionOf', {}).get('taskId') == task['id'] and other['status'] not in TERMINAL | {'partial'}:
                 return False, '有单条重做仍在引用这个工程，请等重做结束后验收'
         return True, ''
 

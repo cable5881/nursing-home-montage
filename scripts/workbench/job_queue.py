@@ -9,7 +9,7 @@ import sys
 import time
 import uuid
 
-TERMINAL={'completed','cancelled'}
+TERMINAL={'completed','cancelled','timed_out'}
 BLOCKED={'failed','needs_input','interrupted'}
 
 
@@ -68,7 +68,7 @@ class JobQueue:
     def public(self):
         data=self.data();head=self.head(data)
         pending=[x for x in data['items'] if not(x['status'] in TERMINAL and x.get('settled'))]
-        fields=('id','taskId','index','kind','sequence','personName','number','title','status','phase','message','created','updated','platformAgentId','settled','recoveryRequested','answerPending','recoveryRequestedAt','recoveryDispatched','recoveryState','recoveryResult')
+        fields=('id','taskId','index','kind','sequence','personName','number','title','status','phase','message','created','updated','deadline','stopReason','platformAgentId','settled','recoveryRequested','answerPending','recoveryRequestedAt','recoveryDispatched','recoveryState','recoveryResult')
         return {'items':[{k:x.get(k) for k in fields}|{'position':pending.index(x)+1 if x in pending else None,'answerSaved':bool(x.get('answer'))} for x in data['items']],
                 'headId':head['id'] if head else None,'waiting':sum(x['status']=='queued' for x in pending),'paused':bool(head and head['status'] in BLOCKED),
                 'busy':bool(head and (head['status'] in ('assigned','running','stopping') or not head.get('settled'))),
@@ -89,11 +89,13 @@ class JobQueue:
             return
         completed=sum(x['status']=='completed' for x in rows)
         if all(x['status'] in TERMINAL and x.get('settled') for x in rows):
-            status='completed' if completed==len(rows) else 'partial' if completed else 'cancelled'
+            status='completed' if completed==len(rows) else 'partial' if completed else 'timed_out' if any(x['status']=='timed_out' for x in rows) else 'cancelled'
         else:
             current=next((x for x in rows if not(x['status'] in TERMINAL and x.get('settled'))),rows[-1])
             status='running' if current['status'] in ('assigned','completed') else 'stopping' if current['status']=='cancelled' and not current.get('settled') else current['status']
         current=next((x for x in rows if not(x['status'] in TERMINAL and x.get('settled'))),rows[-1])
+        if status=='timed_out':
+            current=next(x for x in reversed(rows) if x['status']=='timed_out')
         message=f"已完成 {completed}/{len(rows)} 条 · "+current['message']
         patch={'status':status,'message':message,'phase':current.get('phase',0),'completedCount':completed,'activeItemId':current['id'],'question':current.get('question') if status=='needs_input' else None}
         if any(original.get(k)!=v for k,v in patch.items()):self.app.update(ident,**patch)
@@ -152,20 +154,56 @@ class JobQueue:
             if row['status'] not in ('assigned','running'):raise ValueError('当前作业不能领取')
             if row.get('workerId') and row['workerId']!=worker_id:raise ValueError('已有其他子 Agent 领取这条视频')
             if not isinstance(worker_id,str) or not worker_id.strip():raise ValueError('必须提供独立子 Agent 持有者标识')
-            row.update(status='running',workerId=worker_id,started=row.get('started',time.time()),seen=time.time(),updated=time.time(),message='Agent 已接手这一条视频')
+            now=time.time()
+            row.update(status='running',workerId=worker_id,started=row.get('started',now),seen=now,updated=now,message='Agent 已接手这一条视频')
+            if row['kind']=='video' and 'deadline' not in row:
+                row['timeoutMinutes']=self.app.models.production_timeout()
+                row['deadline']=row['started']+row['timeoutMinutes']*60
+            self.mark_expired(row,now)
             self.save(data);self.sync_task(row['taskId']);return row
+
+    def mark_expired(self,row,now):
+        if row['status'] not in ('assigned','running') or row.get('settled') or now<row.get('deadline',float('inf')):
+            return False
+        note=f"单条制作达到 {row['timeoutMinutes']} 分钟时限"
+        row.update(status='stopping',stopReason='timeout',message=note+'，正在停止；已有文件保留',updated=now)
+        return True
+
+    def expire_head(self):
+        head=self.head()
+        if not head or head['status'] not in ('assigned','running') or time.time()<head.get('deadline',float('inf')):
+            return
+        with self.app.transaction():
+            data=self.data();row=self.head(data)
+            if row and self.mark_expired(row,time.time()):
+                self.save(data);self.sync_task(row['taskId'])
+                self.app.event(row['taskId'],row['message'])
+
+    def finish_stop(self,row,settling=False):
+        if row.get('stopReason')=='timeout':
+            row.update(status='timed_out',message=f"单条制作超时（{row['timeoutMinutes']} 分钟），已停止；已有文件保留")
+        else:
+            row.update(status='cancelled',message='当前制作已结束，这一条已取消' if settling else '已到停止检查点，正在确认制作结束')
+
+    def reject_stopped_report(self,data,row):
+        self.mark_expired(row,time.time())
+        if row['status']=='stopping':
+            self.finish_stop(row)
+            row['updated']=time.time()
+            self.save(data);self.sync_task(row['taskId'])
+            self.app.event(row['taskId'],row['message'])
+            raise ValueError('已停止本条，立即结束子 Agent 并返回协调者')
 
     def report(self,ident,lease,phase,status,message,question=None):
         with self.app.transaction():
             data,row=self.checked(ident,lease)
-            if row['status']=='stopping':
-                row.update(status='cancelled',message='已到停止检查点，正在确认制作结束',updated=time.time())
-                self.save(data);self.sync_task(row['taskId']);raise ValueError('已停止本条，立即结束子 Agent 并返回协调者')
+            self.reject_stopped_report(data,row)
             if row['status']!='running':raise ValueError('请由独立子 Agent 先 accept 领取，或结束已报告的作业')
             if status=='needs_input' and not question:raise ValueError('需要补充时必须提供具体问题')
             if status=='completed':
                 if row['kind']=='planning':self.app.planning.verify(self.app.task(row['taskId']))
                 else:self.app.verify_job(Path(row['job']))
+                self.reject_stopped_report(data,row)
                 phase=6
             row.update(status=status,phase=phase,message=self.app.redact(message)[:1000],question=question,seen=time.time(),updated=time.time())
             if row.get('recoveryRequested'):
@@ -188,7 +226,10 @@ class JobQueue:
                 if row.get('platformAgentId') and row['platformAgentId']!=agent_id:raise ValueError('结束回执与已绑定的原生执行者不一致')
                 if any((x.get('platformAgentId')==agent_id and x['id']!=ident) or any(a.get('agentId')==agent_id for a in x.get('attempts',[])) for x in data['items']):raise ValueError('每次制作或恢复必须使用全新子 Agent，不能复用旧上下文')
                 row['platformAgentId']=agent_id
-            if row['status']=='stopping':row.update(status='cancelled',message='当前制作已结束，这一条已取消')
+            self.mark_expired(row,time.time())
+            if row['status']=='stopping':
+                self.finish_stop(row,settling=True)
+                self.app.event(row['taskId'],row['message'])
             elif row['status'] in ('assigned','running'):row.update(status='failed',message='当前制作已结束，交付核验尚未通过；队列已暂停')
             elif row['status']=='completed':
                 try:
@@ -200,6 +241,7 @@ class JobQueue:
             if row.get('answerPending') and row['status']=='needs_input':
                 row.setdefault('answerQuestion',row.get('question'))
                 row.update(status='queued',message='补充已保存，继续当前序号',answerPending=False,question=None)
+                row.pop('deadline',None);row.pop('timeoutMinutes',None)
             self.save(data);self.sync_task(row['taskId']);return row
 
     def action(self,ident,action,answer=None):
@@ -207,7 +249,7 @@ class JobQueue:
             data=self.data();row=self.item(ident,data);head=self.head(data)
             if action=='cancel':
                 # A verified delivery remains a delivery while its child is being reclaimed.
-                if row['status']=='completed' or row['status']=='cancelled' and row.get('settled'):return row
+                if row['status']=='completed' or row['status'] in TERMINAL and row.get('settled') or row.get('stopReason')=='timeout':return row
                 row.update(status='cancelled' if row.get('settled') else 'stopping',message='已取消排队' if row.get('settled') else '已请求停止，等待当前制作结束；已有文件保留',updated=time.time())
                 if row['kind']=='cover':self.cover_state(row,row['status'],row['message'])
             elif action in ('retry','answer'):
@@ -224,6 +266,8 @@ class JobQueue:
                 elif not row.get('settled'):raise ValueError('子 Agent 尚未结束，请先等待或请求检查旧执行者')
                 if row.get('settled'):
                     row.update(status='queued',message='按原序号继续当前作业',question=None)
+                    for field in ('deadline','timeoutMinutes','stopReason'):
+                        row.pop(field,None)
                     if row['kind']=='cover':self.cover_state(row,'queued',row['message'])
                 row['updated']=time.time()
                 self.app.channel.request_connection('用户已重试队首，等待恢复接单')
@@ -246,9 +290,13 @@ class JobQueue:
             if not evidence:raise ValueError('必须先确认旧子 Agent 已结束，并记录检查结果')
             if row.get('localExecution')!=local:raise ValueError('恢复请求与本条执行方式不符')
             if self.app.channel.has_active(ident):raise ValueError('本地执行步骤仍在运行，不能回收')
-            cancelled=row['status'] in ('stopping','cancelled')
+            self.mark_expired(row,time.time())
+            cancelled=row['status'] in ('stopping','cancelled','timed_out')
             status='cancelled' if cancelled else 'interrupted'
             message='已取消，原生执行者已确认退出' if cancelled else '旧执行者已确认停止，可以从当前序号继续'
+            if row.get('stopReason')=='timeout':
+                self.finish_stop(row,settling=True)
+                status,message=row['status'],row['message']
             if row['status']=='completed':
                 try:
                     if row['kind']=='planning':self.app.planning.verify(self.app.task(row['taskId']))
@@ -260,6 +308,7 @@ class JobQueue:
                 message='补充已保存，继续当前序号' if row.get('answerPending') else row['message']
                 if row.get('answerPending'):
                     row.update(answerPending=False,question=None)
+                    row.pop('deadline',None);row.pop('timeoutMinutes',None)
             if local and row['status']=='failed':
                 status='failed';message=row['message']
             if local and status=='interrupted' and row['status'] in ('assigned','running'):

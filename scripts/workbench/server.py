@@ -943,7 +943,7 @@ def main():
         last_error=None
         while True:
             try:
-                app.queue.process_inbox();app.queue.reconcile();app.queue.launch_local();app.acceptance.tick();app.archive.tick()
+                app.queue.expire_head();app.queue.process_inbox();app.queue.reconcile();app.queue.launch_local();app.acceptance.tick();app.archive.tick()
                 app.voice_training.tick()
                 coordinator.tick()
                 last_error=None

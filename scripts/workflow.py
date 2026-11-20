@@ -226,19 +226,40 @@ def align_audio(audio,text,out,cfg,prompt='',*,retry_prompt=''):
     cache=Path.home()/cfg['alignment']['local_cache'];model_path=str(cache) if cache.exists() else cfg['alignment']['model']
     model=WhisperModel(model_path,device='cpu',compute_type='int8',cpu_threads=cfg['alignment']['threads'])
     cc=OpenCC('t2s');expected=phonemes(text)
-    def recognize(hint):
-        parts,_=model.transcribe(str(audio),language='zh',beam_size=5,word_timestamps=True,vad_filter=False,initial_prompt=hint or None)
+    def recognize(hint, hotwords=None):
+        opts={'hotwords': hotwords} if hotwords else {}
+        parts,_=model.transcribe(str(audio),language='zh',beam_size=5,word_timestamps=True,vad_filter=False,initial_prompt=hint or None,**opts)
         rows=[{'start':s.start,'end':s.end,'text':cc.convert(s.text),'words':[{'word':cc.convert(w.word),'start':w.start,'end':w.end,'probability':w.probability} for w in s.words or []]} for s in parts]
         recognized=''.join(r['text'] for r in rows);actual=phonemes(recognized)
-        differences=[{'op':tag,'expected':expected[x:y],'recognized':actual[u:v]} for tag,x,y,u,v in difflib.SequenceMatcher(None,expected,actual,autojunk=False).get_opcodes() if tag!='equal']
+        differences=[{'op':tag,'expected':expected[x:y],'recognized':actual[u:v],'expectedRange':[x,y]} for tag,x,y,u,v in difflib.SequenceMatcher(None,expected,actual,autojunk=False).get_opcodes() if tag!='equal']
         return rows,recognized,differences
     rows,recognized,diff=recognize(prompt)
     first_diff=None
     if diff and retry_prompt and retry_prompt!=prompt:
         first_diff=diff
         rows,recognized,diff=recognize(retry_prompt)
+    keyword_retry=None
+    normalized=clean(text)
+    if (diff and len(diff)<=4 and len(normalized)==len(expected)
+            and all(d['op']=='replace' and 1<=len(d['expected'])==len(d['recognized'])<=2 for d in diff)):
+        # Recheck neighboring words on the same audio. Require an exact full
+        # transcript and measured numeric timings after this bounded retry.
+        hints=[]
+        numerals=re.compile(r'[零一二两三四五六七八九十百千万亿点]')
+        for d in diff:
+            start,end=d['expectedRange']
+            disputed=normalized[start:end]
+            if not numerals.search(disputed):
+                left=numerals.split(normalized[max(0,start-2):start])[-1]
+                right=numerals.split(normalized[end:end+2])[0]
+                hints.append(left+disputed+right)
+        if hints:
+            hotwords='，'.join(dict.fromkeys(hints))
+            keyword_retry={'priorDifferences':diff,'hotwords':hotwords}
+            rows,recognized,diff=recognize('',hotwords)
     result={'sha256':sha(audio),'textSha256':digest(text),'expected':text,'recognized':recognized,'differences':diff,'passed':bool(expected) and not diff,'method':'local faster-whisper medium word alignment with simplified Chinese and numeral normalization','humanListeningPerformed':False,'segments':rows}
     if first_diff is not None:result['properNameRetry']={'firstDifferences':first_diff,'prompt':retry_prompt}
+    if keyword_retry is not None:result['keywordRetry']=keyword_retry
     if not diff:
         from alignment import character_map
         try:

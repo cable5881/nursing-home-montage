@@ -37,13 +37,13 @@ def source_evidence(sources):
     return evidence
 
 
-def frame(path, second=None):
+def frame(path, second=None, *, timeout=45):
     seek = ['-ss', str(second)] if second is not None else []
     result = subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', *seek, '-protocol_whitelist', 'file,pipe',
                              '-i', str(path), '-frames:v', '1',
                              '-vf', 'scale=768:768:force_original_aspect_ratio=decrease',
                              '-f', 'image2pipe', '-c:v', 'mjpeg', '-threads', '1', '-q:v', '4', 'pipe:1'],
-                            capture_output=True, timeout=45)
+                            capture_output=True, timeout=timeout)
     if result.returncode or not result.stdout.startswith(b'\xff\xd8'):
         raise ValueError('无法读取媒体检查帧，请确认本地素材可正常播放。')
     return result.stdout
@@ -53,6 +53,10 @@ class Editor:
     def __init__(self, skill, client, read, write, checkpoint):
         self.skill, self.client = skill, client
         self.read, self.write, self.checkpoint = read, write, checkpoint
+        self.time_budget = lambda maximum: maximum
+
+    def read_frame(self, path, second=None):
+        return frame(path, second, timeout=self.time_budget(45))
 
     def rules(self, *names):
         return '\n\n'.join((self.skill / 'references' / (name + '.md')).read_text(encoding='utf-8')
@@ -84,7 +88,7 @@ class Editor:
                     if not p.is_relative_to(root):
                         raise ValueError('素材路径越出了所在机构目录。')
                     times = (.2 * row['duration'], .65 * row['duration']) if row['kind'] == 'video' else (None,)
-                    frames[ident] = [(f'{ident} 图 {index}', frame(p, time)) for index, time in enumerate(times, 1)]
+                    frames[ident] = [(f'{ident} 图 {index}', self.read_frame(p, time)) for index, time in enumerate(times, 1)]
                 visuals.extend(frames[ident])
             try:
                 response = self.ask(
@@ -131,7 +135,8 @@ class Editor:
         for _ in range(3):
             result = self.ask(
                 NARRATOR_CONTEXT + '为每条约一分钟的养老机构综合探访选出家属最关心的两到三组核心特点，通常只需三到五条简短事实。'
-                '每项只写一个能在正文里讲清的要点。除非用户特别要求，背景年份、门牌、规模数字和设施清单'
+                '每项只写一个能在正文里讲清的要点。除非用户特别要求，详细门牌和交通线路留在发布文案，'
+                '背景年份、规模数字和设施清单'
                 '无需列为每条都必须重复的共同事实。每条事实必须完全受其对应原文段落支持，并保留限定词。'
                 '从 evidence 中选择对应编号（如 e1），由程序取原文。如果已有 feedback，按提示修正。'
                 '事实不足时给出具体问题。JSON {"facts":[{"text":"简短事实","evidenceId":"e1"}],"question":null}。',
@@ -153,22 +158,67 @@ class Editor:
         question(result)
         raise ValueError('共同事实提炼未通过原文校验。' + feedback)
 
-    def rebind_fact_references(self, sentences, references, candidate):
+    def rebind_fact_references(self, sentences, references, candidate, *, editable=False, omit_unsupported=False):
         affected = {str(i):s for i,s in enumerate(sentences,1)
-                    if any(ident not in references for ident in s.get('factIds',[]))}
+                    if any(ident not in references for ident in s.get('factIds',[]))
+                    or (s.get('kind','fact')=='fact' and not s.get('factIds'))}
         if not affected:return
         response = self.ask(
-            '只核对这些句子的事实出处，不修改原稿。逐句选能直接支持其中事实及限定词的原文编号。'
-            '只能使用 evidence 中存在的编号。无出处时返回空数组，由后续策划改写。'
-            '返回 {"references":{"句号":["原文编号"]}}，句号必须使用输入的数字键。',
-            {'sentences':{i:s['text'] for i,s in affected.items()},'evidence':references},max_tokens=2500)
+            '只修复这些句子的事实引用。逐句选择能直接支持其中全部事实及限定词的原文编号。'
+            '只能使用 evidence 中现有的编号，正文核心要点优先使用对应的 f 编号。'
+            '允许修改文案时，如果原文只能支持句中的部分内容，在 rewrites 中给出简短的修订句，'
+            '保留能证实的内容和原有主题。references 填修订句对应的编号。不能验证时填空数组。'
+            '返回 {"references":{"句号":["原文编号"]},"rewrites":{"句号":"修订句"}}，使用输入的数字键。',
+            {'sentences':{i:s['text'] for i,s in affected.items()},'evidence':references,'mayRewrite':editable},max_tokens=3000)
         bindings = response.get('references')
+        rewrites = response.get('rewrites', {})
         if not isinstance(bindings,dict) or bindings.keys()!=affected.keys():
             raise PlanError('请按现有原文逐句纠正不存在的 factIds。',candidate)
-        for i,values in bindings.items():
+        if not isinstance(rewrites,dict) or rewrites.keys()-affected.keys() or (rewrites and not editable):
+            raise PlanError('请只修改指定句子的引用，保留不能改动的文案。',candidate)
+        if any(not isinstance(value,str) or not value.strip() for value in rewrites.values()):
+            raise PlanError('请用有出处的完整句子修复缺少引用的文案。',candidate)
+        discarded=[]
+        for i,s in affected.items():
+            values=bindings[i]
             if not isinstance(values,list) or not values or any(not isinstance(v,str) or v not in references for v in values):
+                if (omit_unsupported and 1<int(i)<len(sentences) and s.get('kind','fact')=='fact'
+                        and not any(ident in references for ident in s.get('factIds',[]))):
+                    discarded.append(int(i)-1)
+                    continue
                 raise PlanError(f'第 {i} 句仍缺少可核验的原文引用，请重新选择原文或改写。',candidate)
-        for i,s in affected.items():s['factIds']=list(dict.fromkeys(bindings[i]))
+        for i,s in affected.items():
+            if int(i)-1 in discarded:
+                continue
+            s['factIds']=list(dict.fromkeys(bindings[i]))
+            if i in rewrites:
+                s['text']=rewrites[i].strip()
+        for index in sorted(discarded,reverse=True):
+            del sentences[index]
+
+    def fit_institution_labels(self, institution, context, candidate):
+        fields = ('displayName', 'headline')
+        invalid = [key for key in fields if not self.short_label(institution.get(key))]
+        if not invalid:
+            return
+        labels = self.ask(
+            '只修正片中标题条的字段，每项 1 至 12 个字符，空格和标点也计数。'
+            'displayName 用真实机构简称，headline 用简短的实地探访主题。保留原意和原文限定，'
+            '禁止新增事实。按 labels 给出的键返回 JSON，值是字符串。',
+            {'institutionName': institution.get('name', ''), 'labels': {key: institution.get(key) for key in invalid},
+             'requirements': context['requirements']}, max_tokens=256)
+        for key in invalid:
+            label = labels.get(key)
+            if self.short_label(label):
+                institution[key] = label.strip()
+            elif key == 'headline':
+                institution[key] = '养老机构实地探访'
+            else:
+                raise PlanError('请给出最多 12 字、能对应真实机构名称的 displayName。', candidate)
+
+    @staticmethod
+    def short_label(value):
+        return isinstance(value, str) and bool(value.strip()) and len(value) <= 12 and not any(c in value for c in '\r\n')
 
     def plan(self, task, index, context, facts, previous, feedback='', *, evidence=None, candidate=None):
         prefs = (task.get('videoPreferences') or [''] * task['count'])[index]
@@ -179,10 +229,13 @@ class Editor:
             NARRATOR_CONTEXT + '你负责写一条中文养老机构探访视频。按下列技能规则先写整篇口语稿并做语言润色，再分句选镜和定封面。'
             '仅使用真实素材，选片基于提供的实看结果。开头和结尾选有运动的源视频；在短片剩余时长足够的区间取镜，'
             '预计每秒 3.5 至 4 个汉字，给足分镜，sourceStart 使用秒数。不要指定资源路径、任何运行设置或关闭审核。'
-            '默认不要生成 captions，由现有程序自动分字幕。只有用户明确给定字幕要求时才填写。'
+            '默认口播讲照护和生活场景，地点只需说到片区；除非用户明确要求口播地址或路线，'
+            '详细街道、门牌和地铁线路可以留到发布文案。院名按自然口语念出，用原文可对应的真实简称，避免反复念全称。'
+            '无需生成 captions。工作台使用配音时间和字宽排字幕。'
             '各事实写进实际口播后，在对应句的 factIds 数组中逐项标明传入的编号，如 ["f1","f2"]。'
             '综合稿的 sentences 必须覆盖 facts 中全部 f 编号。额外细节可用 supportingEvidence 中支持该句的 e 编号，'
             '这些细节无需全部写入。句子有多个事实时可标多个编号。封面标签或 publication 写了数字时也提供 factIds。'
+            '默认优先讲 facts 的重点。没有确切出处的补充细节可以省略，避免在一句中合并多个来源各自未能支持的结论。'
             '收到 feedback 时逐项修正。candidate 是待修订的上一个草稿，保留其中已符合要求的内容。'
             '用对应原文编号支持每个事实句，不用无关编号凑数。'
             '仅在用户偏好明确指定专题时返回 topicAuthorization 原话。'
@@ -190,6 +243,8 @@ class Editor:
             '输出一个 JSON 对象。顶层结构为 {"plan":{},"openingAngle":"本条如何开场","structure":"本条展开顺序",'
             '"coverAngle":"本条封面主题","topicAuthorization":"","question":null}。三项角度均填写具体内容。'
             'plan 必须同时包含 institution、sentences、cover 和 publication。'
+            'asrPrompt 可给出本稿实际出现的少见专名，供配音识别复核使用，不能换掉任何口播用词。'
+            'institution.displayName 和 institution.headline 各最多 12 字，标点也计入。'
             '封面放在 plan.cover，包含 main_title 和三个 labels；发布文案放在 plan.publication，'
             '包含 title、description 和五个不同的 topics。两个字段都按同一条完整口播撰写。\n'
             + self.rules('plan-schema', 'narration', 'narration-polish', 'covers'),
@@ -212,6 +267,7 @@ class Editor:
             plan['settings']['music']['resource'] = task['musicTrack']['resource']
         if context['institutionName']:
             plan['institution']['name'] = context['institutionName']
+        self.fit_institution_labels(plan['institution'], context, result)
         selected = {x['path']: x for x in context['media']}
         sentences = plan.get('sentences', [])
         if not isinstance(sentences, list) or not 1 <= len(sentences) <= 100:
@@ -219,6 +275,8 @@ class Editor:
         for i, sentence in enumerate(sentences):
             if not isinstance(sentence, dict) or not isinstance(sentence.get('text'), str) or not isinstance(sentence.get('shots'), list):
                 raise PlanError(f'第 {i + 1} 句须包含口播 text 和 shots 数组。')
+            # Layout uses the measured speech and glyph geometry in the render engine.
+            sentence.pop('captions', None)
             for shot in sentence['shots']:
                 path = shot.get('path') if isinstance(shot, dict) else None
                 media = selected.get(path) if isinstance(path, str) else None
@@ -241,9 +299,8 @@ class Editor:
             ids = sentence.get('factIds', [])
             if not isinstance(ids, list) or any(not isinstance(f, str) for f in ids):
                 raise PlanError(f'第 {number} 句的 factIds 必须是编号字符串数组，如 ["f1","f2"]。', result)
-            if sentence.get('kind', 'fact') == 'fact' and not ids:
-                raise PlanError(f'第 {number} 句是事实句，factIds 必须引用能支持该句的原文编号。', result)
-        self.rebind_fact_references(sentences,references,result)
+        omit_unsupported = task['count']==1 and not (revised or task.get('requirements') or prefs)
+        self.rebind_fact_references(sentences,references,result,editable=not revised,omit_unsupported=omit_unsupported)
         used={ident:None for sentence in sentences for ident in sentence.get('factIds',[])}
         authorization = result.get('topicAuthorization') or ''
         if authorization and (not isinstance(authorization, str) or authorization not in task.get('requirements', '') + '\n' + prefs):
@@ -309,7 +366,7 @@ class Editor:
             return approved(result)
 
         for group in chunks(list(enumerate(known, 1)), 6):
-            visuals = [(f'F{index}', frame(path)) for index, path in group]
+            visuals = [(f'F{index}', self.read_frame(path)) for index, path in group]
             note = inspect(visuals)
             if note is not None:
                 notes.append(note)
