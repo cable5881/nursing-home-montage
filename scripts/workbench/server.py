@@ -82,18 +82,6 @@ def find_skill(project, explicit=None):
     return next((Path(p).resolve() for p in choices if p and (Path(p) / "scripts/project_config.py").is_file()), None)
 
 
-def agent_command():
-    """Use the installed desktop host's own runtime, without copying its credentials."""
-    electron = Path("/Applications/WorkBuddy.app/Contents/MacOS/Electron")
-    entry = Path("/Applications/WorkBuddy.app/Contents/Resources/app.asar/cli/bin/codebuddy")
-    env = os.environ.copy()
-    if electron.is_file() and entry.parent.parent.parent.is_file():
-        env.update(ELECTRON_RUN_AS_NODE="1", CODEBUDDY_FORCE_LITE_WB_BUNDLE="1")
-        return [str(electron), str(entry)], env
-    cli = shutil.which("workbuddy") or shutil.which("codebuddy") or shutil.which("cbc")
-    return ([cli], env) if cli else (None, env)
-
-
 class App:
     ensure_dir=staticmethod(ensure_dir)
     python_command=staticmethod(python_command)
@@ -115,9 +103,8 @@ class App:
         self.exiting = False
         self.lock_state = threading.local()
         self.processes = {}
-        self.checking = False
         self.service_mode = 'standalone'
-        self.connection_check = {"state": "unchecked", "message": "检查 WorkBuddy 后即可在页面发起制作"}
+        self.workbench_host = 'local'
         for t in self.tasks() if recover else []:
             if t["status"] in ("running", "queued") and t.get("executor") == "cli":
                 self.update(t["id"], status="interrupted", message="工作台已重新启动。可以从已有阶段继续。")
@@ -261,8 +248,7 @@ class App:
         return {"project": str(self.project), "workspace": str(self.workspace()), "workspaceDefault": str(self.workspace_default()), "workspaceSetting": read(self.data/'workspace.json', {}).get('directory', ''), "version": (self.skill / "VERSION").read_text().strip(), "people": people, "defaultPerson": cfg.get("default_person"), "connection": {"speech": bool(keys[0]), "ak": bool(keys[1]), "sk": bool(keys[2]), "storage": storage, "cloneMode": c.get("clone_mode", ""), "speakerPool": c.get("speaker_pool", [])}, "preferences": {"music": cfg.get("settings", {}).get("music", {}).get("enabled", True), "coverHeader": cfg.get("settings", {}).get("cover", {}).get("header_text", "")}, "agent": self.agent_state(), "model": self.models.public(), "phases": PHASES, "onboarded": read(self.data / "preferences.json", {}).get("onboarded", False)}
 
     def agent_state(self):
-        host_name=read(self.data/'host.json',{}).get('host','workbuddy')
-        if self.models.enabled() or host_name == 'local':
+        if self.models.enabled() or self.workbench_host == 'local':
             settings = self.models.public()
             ready = settings['enabled'] and settings['canEnable'] and settings['providers'][settings['provider']]['configured']
             head = self.queue.head() or {}
@@ -272,7 +258,7 @@ class App:
                     'message': '本机程序自动接单' if ready else '请在设置中保存模型 Key 并启用独立制作'}
         host=read(self.data/'agent-connection.json',{});age=time.time()-host.get('seen',0)
         channel=self.channel.state()
-        label='Codex' if host_name=='codex' else 'WorkBuddy'
+        label='Codex'
         head=self.queue.head();active=bool(head and not head.get('settled'))
         waiting=host.get('state')=='waiting' and age<15
         worker_age=time.time()-(head or {}).get('seen',0)
@@ -281,8 +267,8 @@ class App:
         fault=read(self.data/'transport-fault.json',{})
         blocked=fault.get('state')=='blocked' and fault.get('item')==(head or {}).get('id')
         message='宿主执行通道需恢复，已有工程保留' if blocked else label+' 已连接本地接单通道' if alive else '等待 '+label+' 重新连接；当前没有接单监听'
-        return {'host':host_name,'label':label,'uncertain':active and not alive,'lastSeen':host.get('seen'),
-                'installed':bool(shutil.which('codex')) if host_name=='codex' else bool(agent_command()[0]),'state':'connected' if alive else 'unchecked','message':message,
+        return {'host':'codex','label':label,'uncertain':active and not alive,'lastSeen':host.get('seen'),
+                'installed':bool(shutil.which('codex')),'state':'connected' if alive else 'unchecked','message':message,
                 'probe':read(self.data/'agent-probe.json',{}).get('status'),'testedAt':read(self.data/'agent-probe.json',{}).get('completed'),
                 'transport':channel['transport'],'executionBlocked':blocked,'canDispatch':channel['connected'] or waiting,'workerActive':working,'mode':'desktop',
                 'connectionRequest':read(self.data/'connection-request.json',{}).get('status'),
@@ -629,7 +615,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(403, {'error':'当前浏览器尚未连接工作台，请用启动器的完整地址打开。'})
         try:
             if url.path == '/api/runtime':
-                return self.reply(200, {'project':str(self.app.project), 'skill':str(self.app.skill), 'version':'0.6', 'codeFingerprint':self.server.code_fingerprint,'serviceMode':self.app.service_mode})
+                return self.reply(200, {'project':str(self.app.project), 'skill':str(self.app.skill), 'version':'0.6', 'codeFingerprint':self.server.code_fingerprint,'serviceMode':self.app.service_mode, 'workbenchHost':self.app.workbench_host})
             if url.path == '/api/health':
                 if not isinstance(read(self.app.pc.directory()/'project.json'),dict):raise ValueError('项目配置不可读')
                 return self.reply(200, {'ok':True})
@@ -795,13 +781,8 @@ class Handler(BaseHTTPRequestHandler):
                 if r.returncode:
                     return self.reply(200, {"cancelled": True})
                 return self.reply(200, {"folder": r.stdout.strip()})
-            if url.path == "/api/check-agent":
+            if url.path == "/api/check-agent" and self.app.workbench_host == 'codex':
                 return self.reply(200, self.app.check_agent())
-            if url.path == "/api/open-workbuddy":
-                if sys.platform != "darwin":
-                    raise ValueError("请从开始菜单或桌面打开 WorkBuddy")
-                run_command(["open", "-a", "WorkBuddy"], timeout=15)
-                return self.reply(200, {"opened": True})
             if url.path == "/api/tasks":
                 return self.reply(201, self.app.public_task(self.app.create(v)))
             match = re.fullmatch(r"/api/tasks/([a-f0-9]{12})/(start|cancel|answer)", url.path)
@@ -1050,13 +1031,9 @@ def main():
     p.add_argument("--skill", type=Path)
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--fallback-port", action="store_true", help=argparse.SUPPRESS)
-    p.add_argument('--host', choices=('codex','workbuddy','local'))
+    p.add_argument('--host', choices=('codex','local'), default='local')
     p.add_argument('--open-page', action='store_true')
-    p.add_argument('--service-mode', choices=('standalone','host'),default='standalone')
     args = p.parse_args()
-    if args.host=='workbuddy':
-        from runtime_compat import install
-        install()
     from launch import UNAVAILABLE, project_lock
     args.project = args.project.resolve()
     with project_lock(args.project, 'service.lock', blocking=False) as acquired:
@@ -1067,10 +1044,9 @@ def main():
 
 def serve(args):
     app = App(args.project, args.skill)
-    app.service_mode=args.service_mode
+    app.workbench_host = args.host
     from auto_worker import LocalCoordinator
     coordinator = LocalCoordinator(app, read, write)
-    if args.host:write(app.data/'host.json',{'host':args.host})
     try:
         server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     except OSError as exc:
@@ -1104,7 +1080,7 @@ def serve(args):
             time.sleep(1)
     threading.Thread(target=pump,daemon=True).start()
     url = f"http://127.0.0.1:{server.server_port}/?access={server.token}"
-    write(app.data / "server.json", {"url": url, "pid": os.getpid(), "port": server.server_port, "launchId": os.environ.get("MONTAGE_WORKBENCH_LAUNCH_ID"), "serviceMode":args.service_mode,"lifetimeLock":True})
+    write(app.data / "server.json", {"url": url, "pid": os.getpid(), "port": server.server_port, "launchId": os.environ.get("MONTAGE_WORKBENCH_LAUNCH_ID"), "serviceMode":app.service_mode,"workbenchHost":app.workbench_host,"lifetimeLock":True})
     print(json.dumps({"url": url, "project": str(app.project)}, ensure_ascii=False), flush=True)
     if args.open_page:
         import webbrowser

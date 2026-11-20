@@ -46,7 +46,7 @@ function queueStatusLabel(row){
 function queueDisplayMessage(row) {
   if(row.status==='cancelled')return row.settled?'已取消，执行者已结束；已有文件保留':'取消已提交，等待执行者退出确认；已有文件保留';
   if(row.status==='stopping')return '取消已提交，正在等待停止检查点与执行者退出确认';
-  if(row.status==='queued'&&row.id===state.queue?.headId&&['video','planning'].includes(row.kind)&&!(state.config.agent.canDispatch??(state.config.agent.state==='connected')))return state.config.agent.mode==='local'?'等待启用独立制作，任务已保存在原队列。':'等待 '+(state.config.agent.label||'WorkBuddy')+' 重新连接接单；任务已保存，顺序不变';
+  if(row.status==='queued'&&row.id===state.queue?.headId&&['video','planning'].includes(row.kind)&&!(state.config.agent.canDispatch??(state.config.agent.state==='connected')))return state.config.agent.mode==='local'?'等待启用独立制作，任务已保存在原队列。':'等待 '+(state.config.agent.label||'Codex')+' 重新连接接单；任务已保存，顺序不变';
   if(row.activityMessage)return row.activityMessage;
   if(row.message!=='正在检查当前制作状态；确认结束前不会开始下一条')return row.message||'';
   const task=state.tasks.find(t=>t.id===row.taskId),prefix='第 '+(row.index+1)+' 条 · ';
@@ -62,7 +62,7 @@ function batchProgress(task){
 function connectionHelp(row){
   if(!row||row.status!=='queued'||!['video','planning'].includes(row.kind)||(state.config.agent.canDispatch??(state.config.agent.state==='connected')))return '';
   if(state.config.agent.mode==='local')return `<p class="queue-connection">任务会在配置完成后按原顺序运行。<a class="text-button" href="#settings">配置模型 ${icon('arrow-right')}</a></p>`;
-  return `<p class="queue-connection">等待 ${E(state.config.agent.label||'WorkBuddy')} 接单。<button class="text-button" data-action="check-agent">请求恢复连接</button><a class="text-button" href="#settings">连接方式 ${icon('arrow-right')}</a></p>`;
+  return `<p class="queue-connection">等待 ${E(state.config.agent.label||'Codex')} 接单。<button class="text-button" data-action="check-agent">请求恢复连接</button><a class="text-button" href="#settings">连接方式 ${icon('arrow-right')}</a></p>`;
 }
 function queueItemTitle(row) {
   return row.kind === 'planning' ? '整批素材整理与统一策划' : row.kind === 'cover' ? '更新视频首帧' : E(row.personName) + ' · 本批第 ' + (row.index + 1) + ' 条';
@@ -107,8 +107,7 @@ function taskAnswerNotice(t) {
   if(agent.canDispatch??(agent.state==='connected'))
     return '<p class="inline-note" role="status">答复已保存，等待 Agent 领取原任务。</p>';
   const label=E(agent.label||'Agent');
-  const open=agent.host==='workbuddy'?'<button type="button" class="text-button" data-action="open-workbuddy">打开 WorkBuddy</button>':'';
-  return `<div class="inline-note"><p role="status">答复已保存，任务仍在原队首。等待 ${label} 重新接单。</p><p>把连接指令发到原对话，Agent 接单后会读取已保存的答复。</p><button type="button" class="secondary" data-action="copy-agent">复制连接指令</button> ${open}</div>`;
+  return `<div class="inline-note"><p role="status">答复已保存，任务仍在原队首。等待 ${label} 重新接单。</p><p>把连接指令发到原对话，Agent 接单后会读取已保存的答复。</p><button type="button" class="secondary" data-action="copy-agent">复制连接指令</button></div>`;
 }
 taskControls=function(t){
   if(t.queueItems?.length){

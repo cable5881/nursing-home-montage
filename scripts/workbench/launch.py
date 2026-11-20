@@ -82,12 +82,12 @@ def write_shortcut(project):
     target.chmod(0o700)
 
 
-def launch(project, no_open=False, managed=False, independent=False):
+def launch(project, no_open=False, host=None):
     project=Path(project).resolve()
     project.mkdir(parents=True,exist_ok=True)
     with project_lock(project, 'launch.lock'):
         write_shortcut(project)
-        return _launch(project,no_open,managed,independent)
+        return _launch(project, no_open, host)
 
 
 def browser_result(record, no_open, **details):
@@ -97,7 +97,7 @@ def browser_result(record, no_open, **details):
     return {**record, 'browserOpened': bool(opened), **details}
 
 
-def _launch(project,no_open,managed,independent):
+def _launch(project, no_open, host):
     data = project / ".montage/workbench"
     record = data / "server.json"
     try: previous = json.loads(record.read_text())
@@ -129,7 +129,7 @@ def _launch(project,no_open,managed,independent):
                     raise RuntimeError(UNAVAILABLE)
                 from server import code_fingerprint
                 upgrade = runtime.get('codeFingerprint') != code_fingerprint()
-                switch_mode = independent and runtime.get('serviceMode') != 'standalone'
+                switch_mode = host is not None and runtime.get('workbenchHost') != host
                 if not upgrade and not switch_mode:
                     return browser_result(previous, no_open, reused=True)
                 try:
@@ -159,12 +159,8 @@ def _launch(project,no_open,managed,independent):
     recorded_listener = previous and restart_port is None and port_listening(previous['port'])
     if service_running(project) or recorded_listener:
         raise RuntimeError(UNAVAILABLE)
-    if managed:
-        from server import python_command
-        command=python_command(Path(__file__).with_name('server.py'))+' --project '+shlex.quote(str(project))+' --port 0 --host workbuddy --service-mode host'
-        return {'httpStarted':False,'needsHostService':True,'serverCommand':command,'instruction':'使用 WorkBuddy 原生命令工具的官方后台模式运行 serverCommand，保存真实后台句柄；服务就绪后重新执行原入口，检查 /api/health 并复用同一服务。无需启动 Terminal 或执行项目快捷方式。不要通过自行脱离子进程或删除宿主环境变量绕过执行生命周期。'}
     cmd = [sys.executable, str(Path(__file__).with_name("server.py")), "--project", str(project),
-           "--port", str(restart_port or 8765), "--fallback-port"]
+           "--port", str(restart_port or 8765), "--fallback-port", "--host", host or "local"]
     if shutil.which("rtk"):
         cmd = ["rtk", "proxy", *cmd]
     log_path = data / "server.log"
@@ -207,7 +203,7 @@ def main():
             p.error('请输入项目目录，或使用 --project 指定路径。')
         project=Path(entered).expanduser()
     try:
-        result = launch(project or Path.cwd(), args.no_open, independent=True)
+        result = launch(project or Path.cwd(), args.no_open)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
     print(json.dumps(result, ensure_ascii=False))

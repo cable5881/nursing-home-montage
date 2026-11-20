@@ -16,7 +16,7 @@ def main():
     p.add_argument('--project', type=Path, default=Path.cwd())
     p.add_argument('--workspace', help='新任务的工作区目录，留空恢复项目目录')
     p.add_argument('--mode', choices=('workbench', 'direct', 'maintenance'), default='workbench')
-    p.add_argument('--host', choices=('codex', 'workbuddy', 'local'), default='codex')
+    p.add_argument('--host', choices=('codex', 'workbuddy', 'local'))
     p.add_argument('--request', type=Path)
     p.add_argument('--invocation', help='同一次用户请求重试时沿用，新的制作请求换新值')
     p.add_argument('--no-open', action='store_true', help='仅供自动测试或无浏览器环境')
@@ -24,14 +24,17 @@ def main():
     project = args.project.resolve()
     if args.mode == 'maintenance':
         return {'mode': 'maintenance', 'httpStarted': False, 'instruction': '仅按维护要求修改和验证；不启动制作、页面或监听。'}
-    if args.host == 'local' and args.mode == 'direct':
+    host = args.host or ('local' if args.mode == 'workbench' else 'codex')
+    if args.mode == 'workbench' and host == 'workbuddy':
+        raise ValueError('请在本机双击项目启动器，或从系统终端以 --host local 启动网页工作台。WorkBuddy 无页面制作仍可使用 --mode direct。')
+    if host == 'local' and args.mode == 'direct':
         raise ValueError('独立制作需要本机工作台服务，请使用 --host local 启动。')
     if args.mode == 'direct' and not args.request:
         return {'mode': 'direct', 'httpStarted': False, 'instruction': '不打开页面。按 references/workbench.md 准备本次请求文件，再以 --mode direct --request FILE 提交到相同 FIFO；通过本地 bridge 回传真实阶段。'}
     os.environ['MONTAGE_SKILL_DIR'] = str(SKILL)
     sys.path.insert(0, str(BUNDLE))
-    os.environ['MONTAGE_WORKBENCH_HOST'] = args.host
-    if args.host == 'workbuddy':
+    os.environ['MONTAGE_WORKBENCH_HOST'] = host
+    if host == 'workbuddy':
         from runtime_compat import install
         install()
     from server import App, read, write
@@ -47,13 +50,8 @@ def main():
             app.save_workspace(args.workspace)
         result['workspace'] = str(app.workspace())
     if args.mode == 'workbench':
-        result.update(launch(project, args.no_open, managed=args.host=='workbuddy', independent=args.host=='local'))
-        if result.get('needsHostService'):
-            result['hostGuide']=str(SKILL/'references/workbench-hosts.md')
-            result['retryInstruction']='后台服务启动后，原样重试本次入口，保留 request 和 invocation 参数。'
-            return result
+        result.update(launch(project, args.no_open, host=args.host))
     app = App(project, SKILL)
-    write(app.data / 'host.json', {'host': args.host})
     if args.request:
         request = args.request.resolve()
         if request.stat().st_size > 100_000:
@@ -91,7 +89,10 @@ def main():
         result['taskStatus'] = app.public_task(task)['status']
         if 'url' in result:
             result['taskUrl'] = result['url'] + '#task/' + task['id']
-    if args.host == 'local':
+    if result.get('deferredUpgrade'):
+        result['instruction'] = '当前工作台仍有待处理任务。任务结束后再次启动即可切换。'
+        return result
+    if result.get('workbenchHost', host) == 'local':
         result['settingsUrl'] = result['url'] + '#settings'
         result['instruction'] = '在设置里配置并测试模型、语音和数字人，启用独立制作并保存。'
         return result
