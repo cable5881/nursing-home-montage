@@ -198,8 +198,8 @@ class Pipeline:
                     self.write(journal_path,{**journal,'plan':fingerprint(job/'plan.json'),'waiting':step})
                     return {'state':'pending','step':step,'result':result}
                 if code and step == 'check':
-                    if self.fit_overflowing_headline(job):
-                        self.app.event(row['taskId'], '片中标题超出画布，已适配宽度并重新检查。')
+                    if self.fit_overflowing_headers(job):
+                        self.app.event(row['taskId'], '片中标题或机构名超出画布，已适配宽度并重新检查。')
                         code, result = self.invoke(row,lease,step)
                     if code and self.accept_contrast_notice(row, lease, job):
                         code = 0
@@ -225,46 +225,52 @@ class Pipeline:
         self.app.queue.report(ident,lease,5,'completed','视频已核验，交付产物已保存，等待用户验收')
         return {'state':'completed','job':str(job)}
 
-    def fit_overflowing_headline(self, job):
+    def fit_overflowing_headers(self, job):
         check = self.read(job/'check.json', {})
         if check.get('browserSkipped') is not False:
             return False
         errors = [item for item in check.get('layout', {}).get('findings', [])
                   if item.get('severity') == 'error']
-        headline = self.read(job/'institution.json', {}).get('headline')
-        if not headline or not errors or any(item.get('code') != 'text_box_overflow'
+        institution = self.read(job/'institution.json', {})
+        headers = {
+            institution.get('headline'): 'TitleFace',
+            institution.get('displayName', '').replace('·',' · '): 'BrandFace',
+        }
+        if not errors or any(item.get('code') != 'text_box_overflow'
                 or item.get('sourceFile') != 'compositions/orange-ui.html'
-                or item.get('text') != headline for item in errors):
+                or not item.get('text') or item['text'] not in headers for item in errors):
             return False
-        scales = []
+        scales = {}
         for item in errors:
             rect = item.get('rect', {})
             container = item.get('containerRect', {})
-            if any(not isinstance(rect.get(k), (int,float)) for k in ('left','right')) or any(
-                    not isinstance(container.get(k), (int,float)) for k in ('left','right')):
+            if any(not isinstance(bounds.get(k), (int,float)) for bounds in (rect,container) for k in ('left','right')):
                 return False
             width = rect['right']-rect['left']
             center = (rect['right']+rect['left'])/2
             room = min(center-container['left'],container['right']-center)
             if width <= 0 or room <= 24:
                 return False
-            scales.append(2*(room-24)/width)
-        scale = min(0.98, *scales)
-        if scale < 0.72:
-            return False
+            text = item['text']
+            scales[text] = min(scales.get(text,0.98), 2*(room-24)/width)
         path = job/'compositions/orange-ui.html'
         markup = path.read_text(encoding='utf-8')
-        title = re.search(r'(<text\b[^>]*font-family="TitleFace"[^>]*>)([^<]+)</text>',markup)
-        if not title or html.unescape(title[2]) != headline:
-            return False
-        tag, count = re.subn(r'(font-size|textLength)="([0-9.]+)"',
-                    lambda match: f'{match[1]}="{float(match[2])*scale:.3f}"', title[1])
-        if count != 2:
-            return False
+        for text, scale in scales.items():
+            if scale < 0.72:
+                return False
+            font = headers[text]
+            title = re.search(rf'(<text\b[^>]*font-family="{font}"[^>]*>)([^<]+)</text>',markup)
+            if not title or html.unescape(title[2]) != text:
+                return False
+            tag, count = re.subn(r'(font-size|textLength)="([0-9.]+)"',
+                        lambda match: f'{match[1]}="{float(match[2])*scale:.3f}"', title[1])
+            if count != 2:
+                return False
+            markup = markup[:title.start(1)] + tag + markup[title.end(1):]
         temporary = path.with_suffix('.html.tmp')
-        temporary.write_text(markup[:title.start(1)]+tag+markup[title.end(1):],encoding='utf-8')
+        temporary.write_text(markup, encoding='utf-8')
         temporary.replace(path)
-        self.write(job/'headline-fit.json', {'text':headline,'scale':scale,'source':'browser-layout-check'})
+        self.write(job/'header-fit.json', {'scales':scales, 'source':'browser-layout-check'})
         return True
 
     def prune_checks(self, job):

@@ -12,7 +12,7 @@ def workspace_path(project, value):
     if not path.is_absolute():
         path = project / path
     path = path.resolve()
-    if any(part in ('.montage', '.agents', '.git', '交付产物', '工程') or re.fullmatch(r'批次_[a-f0-9]{12}', part)
+    if any(part in ('.montage', '.agents', '.git') or re.fullmatch(r'批次_[a-f0-9]{12}', part)
            for part in path.parts):
         raise ValueError('请选择独立的工作区目录，不能放在任务工程或内部配置中')
     try:
