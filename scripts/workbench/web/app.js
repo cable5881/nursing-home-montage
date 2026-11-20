@@ -46,8 +46,28 @@ async function api(path, data, options = {}) {
   if (!response.ok) throw new Error(result.error || '操作没有完成，请重试');
   return result;
 }
-let draftTimer;
-function saveDraft() { clearTimeout(draftTimer); draftTimer=setTimeout(()=>api('/api/draft',createDraft).catch(()=>notify('草稿暂未保存，请检查本地服务',true)),400); }
+let draftTimer, workbenchExited = false;
+function saveDraft() {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    draftTimer = undefined;
+    api('/api/draft', createDraft).catch(() => notify('草稿暂未保存，请检查本地服务', true));
+  }, 400);
+}
+async function exitWorkbench() {
+  if (draftTimer !== undefined) {
+    clearTimeout(draftTimer);
+    draftTimer = undefined;
+    await api('/api/draft', createDraft);
+  }
+  await api('/api/shutdown', {});
+  workbenchExited = true;
+  $('.app-shell').hidden = true;
+  $('.skip').hidden = true;
+  const message = $('#workbench-exited');
+  message.hidden = false;
+  message.querySelector('h2').focus();
+}
 function setRoute(next) { location.hash = next; }
 function updateChrome() {
   const c = state.config;
@@ -300,7 +320,7 @@ function renderSettings() {
       <input class="input" id="workspace-directory" name="workspace" value="${E(c.workspaceSetting || '')}" placeholder="${E(c.workspaceDefault || c.project)}">
       <p class="form-help">留空使用启动目录。成品保存在「批次 / 视频 / 交付产物」。</p></div>
     </section>
-    <section class="panel"><div class="settings-section-heading"><span>${icon('clapper')}</span><div><h2>让 Agent 接手制作</h2><p>使用电脑上已安装的 Agent 与 skill，不需要再配一套大模型 Key。</p></div></div><div id="agent-config-status">${agentStatusBlock()}</div><p class="inline-note">首次连接时，把下方的连接指令发送给 Agent。保持这个 Agent 对话运行，之后页面负责提交任务和显示进度。</p></section><section class="panel"><div class="settings-section-heading"><span>${icon('settings')}</span><div><h2>你的制作偏好</h2><p>这些设置将用于之后创建的新任务。</p></div></div><div class="form-group"><label class="field-label" for="cover-header" style="margin-bottom:10px">封面固定头标</label><input class="input" name="coverHeader" id="cover-header" value="${E(c.preferences.coverHeader)}" placeholder="例如：重庆养老院探访"></div><div class="switch-row"><label for="default-music">${icon('music')} 默认添加背景音乐</label><input type="checkbox" class="switch" id="default-music" name="music" ${c.preferences.music ? 'checked' : ''}></div></section><div class="sticky-actions"><button class="primary" type="submit">${icon('save')} 保存本地设置</button><button class="secondary" type="submit" data-next="people">下一步：配置数字人 ${icon('arrow-right')}</button><span id="settings-error" class="inline-error error-slot" role="alert"></span></div></form><aside class="settings-guide"><h3>第一次使用，跟着做就好。</h3><ol><li><strong>开通服务，填好 Key</strong>到火山引擎控制台获取语音 Key 和视频 AK / SK，填入左侧表单。</li><li><strong>添加你自己的数字人</strong>准备一张正面照片。绑定已有音色，或先用录音单独复刻。</li><li><strong>选择机构素材，开始制作</strong>放入实拍视频和真实介绍，写下这条视频的想法。</li></ol><p>留空的 Key 会保留原配置。保存后输入框自动清空，页面只显示是否已配置。</p><div class="path-note">当前项目<br>${E(c.project)}<p style="margin-top:10px">配置位于项目的 .montage 目录，更新 skill 后仍会保留。</p></div></aside></div>`;
+    <section class="panel"><div class="settings-section-heading"><span>${icon('clapper')}</span><div><h2>让 Agent 接手制作</h2><p>使用电脑上已安装的 Agent 与 skill，不需要再配一套大模型 Key。</p></div></div><div id="agent-config-status">${agentStatusBlock()}</div><p class="inline-note">首次连接时，把下方的连接指令发送给 Agent。保持这个 Agent 对话运行，之后页面负责提交任务和显示进度。</p></section><section class="panel"><div class="settings-section-heading"><span>${icon('settings')}</span><div><h2>你的制作偏好</h2><p>这些设置将用于之后创建的新任务。</p></div></div><div class="form-group"><label class="field-label" for="cover-header" style="margin-bottom:10px">封面固定头标</label><input class="input" name="coverHeader" id="cover-header" value="${E(c.preferences.coverHeader)}" placeholder="例如：重庆养老院探访"></div><div class="switch-row"><label for="default-music">${icon('music')} 默认添加背景音乐</label><input type="checkbox" class="switch" id="default-music" name="music" ${c.preferences.music ? 'checked' : ''}></div></section><div class="sticky-actions"><button class="primary" type="submit">${icon('save')} 保存本地设置</button><button class="secondary" type="submit" data-next="people">下一步：配置数字人 ${icon('arrow-right')}</button><span id="settings-error" class="inline-error error-slot" role="alert"></span></div></form><aside class="settings-guide"><h3>第一次使用，跟着做就好。</h3><ol><li><strong>开通服务，填好 Key</strong>到火山引擎控制台获取语音 Key 和视频 AK / SK，填入左侧表单。</li><li><strong>添加你自己的数字人</strong>准备一张正面照片。绑定已有音色，或先用录音单独复刻。</li><li><strong>选择机构素材，开始制作</strong>放入实拍视频和真实介绍，写下这条视频的想法。</li></ol><p>留空的 Key 会保留原配置。保存后输入框自动清空，页面只显示是否已配置。</p><div class="path-note">当前项目<br>${E(c.project)}<p style="margin-top:10px">配置位于项目的 .montage 目录，更新 skill 后仍会保留。</p></div><section class="panel"><h3>本地工作台</h3><p class="form-help">空闲时可退出并停止本地服务。</p><button type="button" class="secondary" data-action="exit-workbench">退出工作台</button></section></aside></div>`;
   $('#storage-provider').addEventListener('change', e => { $('#tos-fields').hidden = e.target.value !== 'tos'; $('#tmpfile-note').hidden = e.target.value === 'tos'; });
   $('#clone-mode').addEventListener('change', e => { $('#speaker-pool-fields').hidden = e.target.value !== 'prepaid'; });
   if(c.agent.mode==='local'){
@@ -514,6 +534,7 @@ document.addEventListener('click', async e=>{
   const button=e.target.closest('[data-action]');if(!button)return;
   const action=button.dataset.action;
   try {
+    if(action==='exit-workbench')await busy(button, exitWorkbench);
     if(action==='onboarding')setRoute('onboarding');
     if(action==='agent-settings')setRoute('settings');
     if(action==='focus-source'){if(route!=='create')setRoute('create');else $('#source-drop')?.focus();}
@@ -563,7 +584,7 @@ async function init() {
     render();
     if(createDraft.source && route==='create') {try {scanResult=await api('/api/scan',{folder:createDraft.source});if($('#source-info'))$('#source-info').innerHTML=sourceInfo();}catch{}}
   }catch(err){main.innerHTML=`<div class="loading-error"><h2>暂时没有连上本地服务</h2><p>${E(err.message)}</p><button class="secondary" data-action="reload">重新连接</button></div>`;main.querySelector('button').onclick=()=>location.reload();}
-  setInterval(async()=>{if(document.hidden)return;try{await refresh();}catch{ $('#agent-status').textContent='本地服务连接中断';$('#agent-dot').className='status-dot error';}},3500);
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh().catch(()=>{});});
+  setInterval(async()=>{if(document.hidden || workbenchExited)return;try{await refresh();}catch{if(workbenchExited)return; $('#agent-status').textContent='本地服务连接中断';$('#agent-dot').className='status-dot error';}},3500);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden && !workbenchExited)refresh().catch(()=>{});});
 }
 // The library extension starts the app after registering all screens.

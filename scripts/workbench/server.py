@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 from contextlib import contextmanager
+import errno
 import hashlib
 import importlib
 import json
@@ -109,6 +110,9 @@ class App:
         self.data = self.project / ".montage/workbench"
         ensure_dir(self.data)
         self.lock = threading.RLock()
+        self.lifecycle = threading.Lock()
+        self.active_requests = 0
+        self.exiting = False
         self.lock_state = threading.local()
         self.processes = {}
         self.checking = False
@@ -140,6 +144,24 @@ class App:
         if recover:
             self.library.bootstrap()
             self.queue.migrate()
+
+    def exit_blocked(self):
+        with self.transaction():
+            if self.active_requests:
+                return '工作台正在处理操作，请完成后再退出。'
+            if any(not row.get('settled') or row['status'] in ('queued', 'assigned', 'running', 'stopping')
+                   for row in self.queue.data()['items']):
+                return '还有视频任务在排队或制作中，请等任务处理完再退出。'
+            tasks = self.tasks()
+            if any(task.get('executor') == 'cli' and task['status'] in ('queued', 'running', 'stopping')
+                   for task in tasks) or any(p.poll() is None for p in self.processes.values()):
+                return '还有视频任务在排队或制作中，请等任务处理完再退出。'
+            if (any(task.get('cleanupStatus') in ('queued', 'running') for task in tasks)
+                    or any(job.get('status') in ('queued', 'running') for job in self.archive.pending())):
+                return '正在清理任务文件，请等清理完成后再退出。'
+            if any(self.voice_training.active(ident) for ident in self.pc.load()['people']):
+                return '正在复刻音色，请等复刻处理完再退出。'
+        return None
 
     @contextmanager
     def transaction(self):
@@ -656,6 +678,34 @@ class Handler(BaseHTTPRequestHandler):
         if not self.valid_host() or not self.authenticated() or self.headers.get("Origin") != "http://" + self.headers.get("Host", ""):
             return self.reply(403, {"error": "请从本地工作台操作"})
         url = urlsplit(self.path)
+        shutdown = url.path == '/api/shutdown'
+        if not shutdown:
+            with self.app.lifecycle:
+                if self.app.exiting:
+                    return self.reply(409, {'error': '工作台正在退出，请从启动器重新打开。'})
+                self.app.active_requests += 1
+        try:
+            self.post(url)
+        finally:
+            if not shutdown:
+                with self.app.lifecycle:
+                    self.app.active_requests -= 1
+
+    def stop_if_idle(self):
+        with self.app.lifecycle:
+            reason = self.app.exit_blocked()
+            if reason:
+                return self.reply(409, {'error': reason})
+            if not self.app.exiting:
+                self.app.exiting = True
+                try:
+                    self.reply(200, {'stopped': True})
+                finally:
+                    threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
+        return self.reply(200, {'stopped': True})
+
+    def post(self, url):
         try:
             if url.path == "/api/upload":
                 return self.upload(parse_qs(url.query))
@@ -674,9 +724,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("输入内容过长")
             v = json.loads(self.rfile.read(length))
             if url.path == '/api/shutdown':
-                self.reply(200, {'stopped':True})
-                threading.Thread(target=self.server.shutdown, daemon=True).start()
-                return
+                return self.stop_if_idle()
             match = re.fullmatch(r'/api/tasks/([a-f0-9]{12})/(acceptance-preview|accept)', url.path)
             if match:
                 if match[2] == 'acceptance-preview':
@@ -1001,6 +1049,7 @@ def main():
     p.add_argument("--project", type=Path, default=Path.cwd())
     p.add_argument("--skill", type=Path)
     p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--fallback-port", action="store_true", help=argparse.SUPPRESS)
     p.add_argument('--host', choices=('codex','workbuddy','local'))
     p.add_argument('--open-page', action='store_true')
     p.add_argument('--service-mode', choices=('standalone','host'),default='standalone')
@@ -1008,12 +1057,26 @@ def main():
     if args.host=='workbuddy':
         from runtime_compat import install
         install()
+    from launch import UNAVAILABLE, project_lock
+    args.project = args.project.resolve()
+    with project_lock(args.project, 'service.lock', blocking=False) as acquired:
+        if not acquired:
+            raise SystemExit(UNAVAILABLE)
+        serve(args)
+
+
+def serve(args):
     app = App(args.project, args.skill)
     app.service_mode=args.service_mode
     from auto_worker import LocalCoordinator
     coordinator = LocalCoordinator(app, read, write)
     if args.host:write(app.data/'host.json',{'host':args.host})
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    except OSError as exc:
+        if not args.fallback_port or exc.errno != errno.EADDRINUSE:
+            raise
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
     server.app = app
     server.code_fingerprint = code_fingerprint()
@@ -1022,9 +1085,17 @@ def main():
         last_error=None
         while True:
             try:
-                app.queue.expire_head();app.queue.process_inbox();app.queue.reconcile();app.queue.launch_local();app.acceptance.tick();app.archive.tick()
-                app.voice_training.tick()
-                coordinator.tick()
+                with app.lifecycle:
+                    if app.exiting:
+                        return
+                    app.queue.expire_head()
+                    app.queue.process_inbox()
+                    app.queue.reconcile()
+                    app.queue.launch_local()
+                    app.acceptance.tick()
+                    app.archive.tick()
+                    app.voice_training.tick()
+                    coordinator.tick()
                 last_error=None
             except Exception as exc:
                 error=app.redact(str(exc))
@@ -1033,7 +1104,7 @@ def main():
             time.sleep(1)
     threading.Thread(target=pump,daemon=True).start()
     url = f"http://127.0.0.1:{server.server_port}/?access={server.token}"
-    write(app.data / "server.json", {"url": url, "pid": os.getpid(), "port": server.server_port, "launchId": os.environ.get("MONTAGE_WORKBENCH_LAUNCH_ID"), "serviceMode":args.service_mode})
+    write(app.data / "server.json", {"url": url, "pid": os.getpid(), "port": server.server_port, "launchId": os.environ.get("MONTAGE_WORKBENCH_LAUNCH_ID"), "serviceMode":args.service_mode,"lifetimeLock":True})
     print(json.dumps({"url": url, "project": str(app.project)}, ensure_ascii=False), flush=True)
     if args.open_page:
         import webbrowser

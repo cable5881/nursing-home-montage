@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Start or reopen the local workbench, using only Python's standard library."""
 import argparse
+import errno
+import http.client
 import http.cookiejar
 from contextlib import contextmanager
 import json
@@ -12,25 +14,60 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
 import webbrowser
 
 
+UNAVAILABLE = "同项目的工作台正在启动、退出或暂时无响应。请稍后再打开启动器。"
+
+
 @contextmanager
-def launch_lock(project):
-    data=project/'.montage/workbench';data.mkdir(parents=True,exist_ok=True)
-    with (data/'launch.lock').open('a+b') as f:
-        if sys.platform=='win32':
+def project_lock(project, name, blocking=True):
+    data = project / '.montage/workbench'
+    data.mkdir(parents=True, exist_ok=True)
+    path = data / name
+    with path.open('a+b') as lockfile:
+        if sys.platform == 'win32':
             import msvcrt
-            f.write(b'0');f.flush();f.seek(0);msvcrt.locking(f.fileno(),msvcrt.LK_LOCK,1)
+            if not path.stat().st_size:
+                lockfile.write(b'0')
+                lockfile.flush()
+            lockfile.seek(0)
+            mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+            try:
+                msvcrt.locking(lockfile.fileno(), mode, 1)
+            except OSError as exc:
+                if blocking or exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    raise
+                yield False
+                return
         else:
             import fcntl
-            fcntl.flock(f.fileno(),fcntl.LOCK_EX)
-        try:yield
-        finally:
-            if sys.platform=='win32':f.seek(0);msvcrt.locking(f.fileno(),msvcrt.LK_UNLCK,1)
-            else:fcntl.flock(f.fileno(),fcntl.LOCK_UN)
+            flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+            try:
+                fcntl.flock(lockfile.fileno(), flags)
+            except BlockingIOError:
+                yield False
+                return
+        yield True  # Closing this handle releases the lock on Windows and POSIX.
+
+
+def service_running(project):
+    with project_lock(project, 'service.lock', blocking=False) as acquired:
+        return not acquired
+
+
+def port_listening(port):
+    try:
+        with socket.create_connection(('127.0.0.1', port), timeout=.5):
+            return True
+    except ConnectionRefusedError:
+        return False
+    except OSError:
+        # A listener with a full backlog can time out.
+        return True
 
 
 def write_shortcut(project):
@@ -48,9 +85,16 @@ def write_shortcut(project):
 def launch(project, no_open=False, managed=False, independent=False):
     project=Path(project).resolve()
     project.mkdir(parents=True,exist_ok=True)
-    write_shortcut(project)
-    with launch_lock(project):
+    with project_lock(project, 'launch.lock'):
+        write_shortcut(project)
         return _launch(project,no_open,managed,independent)
+
+
+def browser_result(record, no_open, **details):
+    opened = webbrowser.open(record['url']) if not no_open else False
+    if not no_open and not opened:
+        print('未能自动打开默认浏览器。可在浏览器中打开下方返回的 url。', file=sys.stderr)
+    return {**record, 'browserOpened': bool(opened), **details}
 
 
 def _launch(project,no_open,managed,independent):
@@ -58,59 +102,69 @@ def _launch(project,no_open,managed,independent):
     record = data / "server.json"
     try: previous = json.loads(record.read_text())
     except (FileNotFoundError,json.JSONDecodeError): previous = None
+    if not isinstance(previous, dict) or not isinstance(previous.get('port'), int) or not 0 < previous['port'] < 65536:
+        previous = None
     restart_port = None
+    if previous and previous.get('lifetimeLock') and not service_running(project):
+        previous = None  # A released lock makes this record stale, even if the port was reused.
     if previous:
-        client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-        base=previous['url'].split('/?')[0]
-        page_alive=False
-        try:
-            with client.open(previous['url'],timeout=2) as response:page_alive=response.status==200
-        except Exception:pass  # The cookie redirect may succeed even if file access is broken.
-        try:
-            with client.open(base+'/api/runtime',timeout=3) as response:runtime=json.load(response)
-        except Exception as exc:
-            if page_alive:raise RuntimeError('旧版工作台仍在运行，请先停止旧 HTTP 服务再打开新入口；任务文件与执行锁保留。') from exc
-            runtime=None
-        alive=runtime is not None
-        if runtime:
-            if runtime.get('project')!=str(project):raise RuntimeError('已有服务属于其他项目，未复用')
-            from server import code_fingerprint
+        port = previous['port']
+        base = f'http://127.0.0.1:{port}'
+        if str(previous.get('url', '')).startswith(base + '/?'):
+            client = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
             try:
-                with client.open(base+'/api/health',timeout=3) as response:healthy=json.load(response).get('ok') is True
-            except Exception:healthy=False
-            if runtime.get('codeFingerprint')!=code_fingerprint() or not healthy or (independent and runtime.get('serviceMode')!='standalone'):
-                try:queue=json.loads((data/'queue.json').read_text())
-                except FileNotFoundError:queue={'items':[]}
-                except (OSError,json.JSONDecodeError) as exc:raise RuntimeError('无法核对执行锁，未自动重启服务') from exc
-                if any(not row.get('settled',True) for row in queue.get('items',[])):
-                    if not healthy:raise RuntimeError('任务仍持有执行锁，服务不可读；未自动重启或释放任务')
-                    opened=webbrowser.open(previous['url']) if not no_open else False
-                    return {**previous,'reused':True,'deferredUpgrade':True,'browserOpened':bool(opened)}
-                request=urllib.request.Request(base+'/api/shutdown',data=b'{}',headers={'Origin':base,'Content-Type':'application/json'})
-                client.open(request,timeout=5).read()
-                restart_port=previous['port']
-                alive=False
-        if alive:
-            if not no_open:opened=webbrowser.open(previous['url'])
-            return {**previous,'reused':True,'browserOpened':bool(opened) if not no_open else False}
+                with client.open(previous['url'], timeout=2):
+                    pass
+                with client.open(base + '/api/runtime', timeout=3) as response:
+                    runtime = json.load(response)
+                if runtime.get('project') != str(project):
+                    raise RuntimeError('记录中的服务属于其他项目，请检查当前项目的工作台启动状态。')
+                with client.open(base + '/api/health', timeout=3) as response:
+                    healthy = json.load(response).get('ok') is True
+            except (OSError, ValueError, http.client.HTTPException) as exc:
+                if service_running(project) or port_listening(port):
+                    raise RuntimeError(UNAVAILABLE) from exc
+            else:
+                if not healthy:
+                    raise RuntimeError(UNAVAILABLE)
+                from server import code_fingerprint
+                upgrade = runtime.get('codeFingerprint') != code_fingerprint()
+                switch_mode = independent and runtime.get('serviceMode') != 'standalone'
+                if not upgrade and not switch_mode:
+                    return browser_result(previous, no_open, reused=True)
+                try:
+                    queue = json.loads((data / 'queue.json').read_text())
+                except FileNotFoundError:
+                    queue = {'items': []}
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise RuntimeError('无法核对执行锁，未自动重启服务') from exc
+                if any(not row.get('settled', True) for row in queue.get('items', [])):
+                    return browser_result(previous, no_open, reused=True, deferredUpgrade=True)
+                request = urllib.request.Request(base + '/api/shutdown', data=b'{}',
+                                                 headers={'Origin': base, 'Content-Type': 'application/json'})
+                try:
+                    with client.open(request, timeout=5):
+                        pass
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 409:
+                        return browser_result(previous, no_open, reused=True, deferredUpgrade=True)
+                    raise RuntimeError(UNAVAILABLE) from exc
+                except OSError as exc:
+                    raise RuntimeError(UNAVAILABLE) from exc
+                for _ in range(30):
+                    if not service_running(project) and not port_listening(port):
+                        restart_port = port
+                        break
+                    time.sleep(.1)
+    recorded_listener = previous and restart_port is None and port_listening(previous['port'])
+    if service_running(project) or recorded_listener:
+        raise RuntimeError(UNAVAILABLE)
     if managed:
         from server import python_command
         command=python_command(Path(__file__).with_name('server.py'))+' --project '+shlex.quote(str(project))+' --port 0 --host workbuddy --service-mode host'
         return {'httpStarted':False,'needsHostService':True,'serverCommand':command,'instruction':'使用 WorkBuddy 原生命令工具的官方后台模式运行 serverCommand，保存真实后台句柄；服务就绪后重新执行原入口，检查 /api/health 并复用同一服务。无需启动 Terminal 或执行项目快捷方式。不要通过自行脱离子进程或删除宿主环境变量绕过执行生命周期。'}
-    data.mkdir(parents=True, exist_ok=True)
-    preferred_port = restart_port or 8765
-    port = 0
-    for _ in range(15 if restart_port else 1):
-        with socket.socket() as probe:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                probe.bind(('127.0.0.1', preferred_port))
-            except OSError:
-                if restart_port: time.sleep(.1)
-            else:
-                port=preferred_port
-                break
-    cmd = [sys.executable, str(Path(__file__).with_name("server.py")), "--project", str(project), "--port", str(port)]
+    cmd = [sys.executable, str(Path(__file__).with_name("server.py")), "--project", str(project),
+           "--port", str(restart_port or 8765), "--fallback-port"]
     if shutil.which("rtk"):
         cmd = ["rtk", "proxy", *cmd]
     log_path = data / "server.log"
@@ -124,13 +178,13 @@ def _launch(project,no_open,managed,independent):
             stdin=subprocess.DEVNULL, stdout=log, stderr=log, **background)
     for _ in range(100):
         if process.poll() is not None:
+            if service_running(project):
+                raise RuntimeError(UNAVAILABLE)
             raise SystemExit("工作台启动失败，请查看 .montage/workbench/server.log")
         if record.exists():
             current = json.loads(record.read_text())
             if current.get("launchId") == launch_id:
-                if not no_open:
-                    opened=webbrowser.open(current["url"])
-                return {**current, "browserOpened":bool(opened) if not no_open else False}
+                return browser_result(current, no_open)
         time.sleep(.1)
     raise SystemExit("工作台启动超时，请检查本地服务日志")
 
@@ -152,7 +206,11 @@ def main():
         if not entered:
             p.error('请输入项目目录，或使用 --project 指定路径。')
         project=Path(entered).expanduser()
-    print(json.dumps(launch(project or Path.cwd(),args.no_open,independent=True),ensure_ascii=False))
+    try:
+        result = launch(project or Path.cwd(), args.no_open, independent=True)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(result, ensure_ascii=False))
 
 
 if __name__ == "__main__":
