@@ -4,6 +4,7 @@ This worker runs inside the authorized local service. It never starts an LLM,
 accepts arbitrary shell text, or declares a visual review on the Agent's behalf.
 """
 import hashlib
+import html
 import json
 import os
 from pathlib import Path
@@ -94,6 +95,12 @@ class Pipeline:
         if shutil.which('rtk'): args = ['rtk','proxy',*args]
         env = {**os.environ, 'MONTAGE_PROJECT_ROOT':str(self.app.project),
                'MONTAGE_QUEUE_ITEM':row['id'], 'MONTAGE_QUEUE_LEASE':lease}
+        from workspace import delivery_folder
+        task = self.app.task(row['taskId'])
+        if row['kind'] == 'video' and (output := delivery_folder(task,row['index'])):
+            env['MONTAGE_WORKBENCH_DELIVERY'] = str(output)
+        else:
+            env.pop('MONTAGE_WORKBENCH_DELIVERY', None)
         owner=Path(row['job'])
         if action=='revise':
             owner=self.app.data/'queue-workers'/row['id']
@@ -190,7 +197,13 @@ class Pipeline:
                 if code==2 or result.get('pending'):
                     self.write(journal_path,{**journal,'plan':fingerprint(job/'plan.json'),'waiting':step})
                     return {'state':'pending','step':step,'result':result}
-                if code and not (step=='check' and self.accept_contrast_notice(row, lease, job)):
+                if code and step == 'check':
+                    if self.fit_overflowing_headline(job):
+                        self.app.event(row['taskId'], '片中标题超出画布，已适配宽度并重新检查。')
+                        code, result = self.invoke(row,lease,step)
+                    if code and self.accept_contrast_notice(row, lease, job):
+                        code = 0
+                if code:
                     return {'state':'failed','step':step,'result':result,'job':str(job)}
                 if step == 'package':
                     verified, _ = self.verified_render(job)
@@ -199,13 +212,92 @@ class Pipeline:
                         raise ValueError('交付视频与技术核验记录不一致。')
                     self.write(job / 'state.json', {**self.read(job / 'state.json', {}),
                                'phase': 'complete', 'video': str(final), 'sha256': verified['sha256'],
-                               'next': 'Deliver the publish-ready ZIP'})
+                               'next': 'Deliver the publish-ready files'})
             journal['steps'].append(step);journal['plan']=fingerprint(job/'plan.json');journal.pop('waiting',None)
             self.write(journal_path,journal)
             if time.monotonic()>=deadline: return {'state':'checkpoint','step':step,'job':str(job)}
         self.app.verify_job(job)
-        self.app.queue.report(ident,lease,5,'completed','视频已核验并打包，等待用户验收')
+        if self.app.task(row['taskId']).get('workspace'):
+            try:
+                self.prune_checks(job)
+            except OSError as exc:
+                self.app.event(row['taskId'], '成品已保存，检查缓存暂未精简：'+self.app.redact(str(exc)), 'warning')
+        self.app.queue.report(ident,lease,5,'completed','视频已核验，交付产物已保存，等待用户验收')
         return {'state':'completed','job':str(job)}
+
+    def fit_overflowing_headline(self, job):
+        check = self.read(job/'check.json', {})
+        if check.get('browserSkipped') is not False:
+            return False
+        errors = [item for item in check.get('layout', {}).get('findings', [])
+                  if item.get('severity') == 'error']
+        headline = self.read(job/'institution.json', {}).get('headline')
+        if not headline or not errors or any(item.get('code') != 'text_box_overflow'
+                or item.get('sourceFile') != 'compositions/orange-ui.html'
+                or item.get('text') != headline for item in errors):
+            return False
+        scales = []
+        for item in errors:
+            rect = item.get('rect', {})
+            container = item.get('containerRect', {})
+            if any(not isinstance(rect.get(k), (int,float)) for k in ('left','right')) or any(
+                    not isinstance(container.get(k), (int,float)) for k in ('left','right')):
+                return False
+            width = rect['right']-rect['left']
+            center = (rect['right']+rect['left'])/2
+            room = min(center-container['left'],container['right']-center)
+            if width <= 0 or room <= 24:
+                return False
+            scales.append(2*(room-24)/width)
+        scale = min(0.98, *scales)
+        if scale < 0.72:
+            return False
+        path = job/'compositions/orange-ui.html'
+        markup = path.read_text(encoding='utf-8')
+        title = re.search(r'(<text\b[^>]*font-family="TitleFace"[^>]*>)([^<]+)</text>',markup)
+        if not title or html.unescape(title[2]) != headline:
+            return False
+        tag, count = re.subn(r'(font-size|textLength)="([0-9.]+)"',
+                    lambda match: f'{match[1]}="{float(match[2])*scale:.3f}"', title[1])
+        if count != 2:
+            return False
+        temporary = path.with_suffix('.html.tmp')
+        temporary.write_text(markup[:title.start(1)]+tag+markup[title.end(1):],encoding='utf-8')
+        temporary.replace(path)
+        self.write(job/'headline-fit.json', {'text':headline,'scale':scale,'source':'browser-layout-check'})
+        return True
+
+    def prune_checks(self, job):
+        notices = self.read(job / 'review-notices.json', {})
+        receipt = job / 'qc-retention.json'
+        if receipt.is_file():
+            return
+        kept = {}
+        remove = []
+        for folder, kind in (('qc-layout','layout'), ('qc-final','final')):
+            frames = sorted((job/folder).glob('*.png'))
+            required = {f for f in frames[:2]}
+            timed = [(frame, float(match[1])) for frame in frames
+                     if (match := re.search(r'-(?:at-)?(\d+(?:\.\d+)?)s\.png$',frame.name))]
+            for note in notices.get(kind, {}).get('findings', []):
+                indices = {int(number) for number in re.findall(r'(?<![A-Za-z0-9])F(\d{1,3})',note)}
+                for start, end in re.findall(r'F(\d{1,3})\s*[-–—～至]\s*F(\d{1,3})',note):
+                    indices.update(range(int(start),min(len(frames),int(end))+1))
+                required.update(frames[index-1] for index in indices if 1 <= index <= len(frames))
+                times = [float(n) for n in re.findall(r'(?<![\d:])(\d+(?:\.\d+)?)\s*(?:秒|s\b)',note)]
+                times.extend(int(m)*60+float(s) for m,s in re.findall(r'(?<!\d)(\d+):(\d+(?:\.\d+)?)',note))
+                for moment in times:
+                    if timed:
+                        required.add(min(timed,key=lambda item:abs(item[1]-moment))[0])
+                if not indices and not times:
+                    # No exact location was reported. Keep representative frames.
+                    required.update(frames[::max(1, len(frames)//5)])
+            kept[folder] = [p.name for p in sorted(required)]
+            remove.extend(p for p in frames if p not in required)
+        for frame in remove:
+            frame.unlink(missing_ok=True)
+        self.write(receipt, {'retained': kept, 'removedCount':len(remove),
+                              'contrastEvidence':str(job/'qc-layout/contrast-evidence')})
 
     def save_notices(self, job, kind, findings, *, incomplete=None):
         if not isinstance(findings, list) or any(not isinstance(text, str) for text in findings):

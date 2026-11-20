@@ -295,6 +295,11 @@ function renderSettings() {
   const c = state.config;
   main.innerHTML = `${heading('先准备好，以后就简单了。','服务与数字人只需配置一次。设置保存在你的本地项目。')}<div class="settings-layout"><form class="settings-stack" id="settings-form">
     ${productionServiceSettings(c)}
+    <section class="panel"><div class="settings-section-heading"><span>${icon('folder')}</span><div><h2>工作区</h2><p>新批次的工程和成品都保存在这里。已有任务继续使用自己的目录。</p></div></div>
+      <div class="form-group"><label class="field-label" for="workspace-directory">工作区目录</label>
+      <input class="input" id="workspace-directory" name="workspace" value="${E(c.workspaceSetting || '')}" placeholder="${E(c.workspaceDefault || c.project)}">
+      <p class="form-help">留空使用启动目录。成品保存在「批次 / 视频 / 交付产物」。</p></div>
+    </section>
     <section class="panel"><div class="settings-section-heading"><span>${icon('clapper')}</span><div><h2>让 Agent 接手制作</h2><p>使用电脑上已安装的 Agent 与 skill，不需要再配一套大模型 Key。</p></div></div><div id="agent-config-status">${agentStatusBlock()}</div><p class="inline-note">首次连接时，把下方的连接指令发送给 Agent。保持这个 Agent 对话运行，之后页面负责提交任务和显示进度。</p></section><section class="panel"><div class="settings-section-heading"><span>${icon('settings')}</span><div><h2>你的制作偏好</h2><p>这些设置将用于之后创建的新任务。</p></div></div><div class="form-group"><label class="field-label" for="cover-header" style="margin-bottom:10px">封面固定头标</label><input class="input" name="coverHeader" id="cover-header" value="${E(c.preferences.coverHeader)}" placeholder="例如：重庆养老院探访"></div><div class="switch-row"><label for="default-music">${icon('music')} 默认添加背景音乐</label><input type="checkbox" class="switch" id="default-music" name="music" ${c.preferences.music ? 'checked' : ''}></div></section><div class="sticky-actions"><button class="primary" type="submit">${icon('save')} 保存本地设置</button><button class="secondary" type="submit" data-next="people">下一步：配置数字人 ${icon('arrow-right')}</button><span id="settings-error" class="inline-error error-slot" role="alert"></span></div></form><aside class="settings-guide"><h3>第一次使用，跟着做就好。</h3><ol><li><strong>开通服务，填好 Key</strong>到火山引擎控制台获取语音 Key 和视频 AK / SK，填入左侧表单。</li><li><strong>添加你自己的数字人</strong>准备一张正面照片。绑定已有音色，或先用录音单独复刻。</li><li><strong>选择机构素材，开始制作</strong>放入实拍视频和真实介绍，写下这条视频的想法。</li></ol><p>留空的 Key 会保留原配置。保存后输入框自动清空，页面只显示是否已配置。</p><div class="path-note">当前项目<br>${E(c.project)}<p style="margin-top:10px">配置位于项目的 .montage 目录，更新 skill 后仍会保留。</p></div></aside></div>`;
   $('#storage-provider').addEventListener('change', e => { $('#tos-fields').hidden = e.target.value !== 'tos'; $('#tmpfile-note').hidden = e.target.value === 'tos'; });
   $('#clone-mode').addEventListener('change', e => { $('#speaker-pool-fields').hidden = e.target.value !== 'prepaid'; });
@@ -307,7 +312,7 @@ function renderSettings() {
   $('#settings-form').addEventListener('submit', async e => {
     e.preventDefault(); const next = e.submitter?.dataset.next; const form = e.target, data = Object.fromEntries(new FormData(form)); $('#settings-error').textContent = '';
     await busy(form.querySelector('[type=submit]'), async () => {
-      try { await api('/api/config', {connection:data, model:state.config.model?modelFields(form):undefined, preferences:{coverHeader:data.coverHeader, music:form.elements.music.checked}}); await refresh(false); if(next)setRoute(next); else renderSettings(); notify('设置已保存到本地项目'); }
+      try { await api('/api/config', {workspace:data.workspace, connection:data, model:state.config.model?modelFields(form):undefined, preferences:{coverHeader:data.coverHeader, music:form.elements.music.checked}}); await refresh(false); if(next)setRoute(next); else renderSettings(); notify('设置已保存到本地项目'); }
       catch (err) { $('#settings-error').textContent = err.message; }
     });
   });

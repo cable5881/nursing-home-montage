@@ -101,10 +101,8 @@ class Acceptance:
             raise ValueError('正在后台清理中间文件，请稍后再修改；成品可正常查看和下载')
 
     def owned_job(self, task):
-        expected = self.app.project / '作品' / ('工作台_' + task['id'])
-        job = Path(task['job'])
-        if job != expected or job.is_symlink() or job.resolve() != expected.absolute():
-            raise ValueError('只能清理这个任务自己创建的工程，不能清理历史工程或外部路径')
+        from workspace import owned_batch
+        job = owned_batch(self.app,task)
         if not job.is_dir():
             raise ValueError('任务工程不存在')
         baseline = self.read(self.app.project / '项目状态.json', {})
@@ -140,6 +138,7 @@ class Acceptance:
             ok, reason = self.eligibility(task,for_cleanup=for_cleanup)
             if not ok:
                 raise ValueError(reason or ('这个任务已经验收' if task.get('reviewStatus') == 'accepted' else '请在任务完成后验收'))
+            from workspace import video_job
             root = self.owned_job(task)
             keep, products = set(), []
             rows = self.app.queue.for_task(ident)
@@ -147,7 +146,7 @@ class Acceptance:
             if not indices:
                 raise ValueError('没有可以验收的成品')
             for index in indices:
-                job = root if task['count'] == 1 else root / f'variant-{index+1:02d}'
+                job = video_job(task,index)
                 self.app.verify_job(job)
                 self._keep_product(ident, index, job, 'original', keep, products)
             edit_root = self.app.edits.root / ident
@@ -165,7 +164,12 @@ class Acceptance:
                 keep.add(p)
             for p in edit_root.glob('*/original-cover.png'):
                 keep.add(p)
-            roots = [root, edit_root]
+            roots = [edit_root]
+            if task.get('workspace'):
+                roots.extend(video_job(task,index) for index in indices)
+                roots.append(root/'batch-planning')
+            else:
+                roots.append(root)
             roots.extend(self.app.data/'queue-workers'/r['id'] for r in self.app.queue.data()['items'] if r['taskId']==ident)
             # Frozen library input copies can be reconstructed by immutable asset IDs.
             source = Path(task['source'])
@@ -198,9 +202,11 @@ class Acceptance:
                     if not isinstance(value, str) or not Path(value).is_absolute(): return False
                     p = Path(value).resolve()
                     return p not in keep and any(p == r or r in p.parents for r in roots)
-                for name in ('inventory.json','runtime.json','plan.json','asset-sources.json'):
-                    if threatened(self.read(other_root/name, {})):
-                        raise ValueError('其他任务仍引用本任务的素材或资产，请先完成该任务的验收')
+                other_jobs = {other_root, *(video_job(other,index) for index in range(other['count']))}
+                for other_job in other_jobs:
+                    for name in ('inventory.json','runtime.json','plan.json','asset-sources.json'):
+                        if threatened(self.read(other_job/name, {})):
+                            raise ValueError('其他任务仍引用本任务的素材或资产，请先完成该任务的验收')
                 for folder, dirs, names in os.walk(other_root, followlinks=False):
                     for name in dirs + names:
                         p = Path(folder) / name
@@ -216,7 +222,7 @@ class Acceptance:
         if job.is_symlink() or not (job / 'final.mp4').is_file() or (job / 'final.mp4').is_symlink():
             raise ValueError('成品不能是外部链接，未进行清理')
         for name in ('final.mp4', 'cover.png', 'plan.json', 'state.json', 'verification.json',
-                     'review-notices.json', 'narration.txt', 'cover-input.json'):
+                     'review-notices.json', 'narration.txt', 'cover-input.json', 'delivery.json'):
             p = job / name
             if p.is_symlink():
                 raise ValueError('保留文件不能引用将被清理的外部资产')
@@ -233,8 +239,9 @@ class Acceptance:
         publication = plan.get('publication', {})
         text = str(publication.get('title', '')) + '\n\n' + str(publication.get('description', '')) + '\n\n' + ' '.join('#'+str(x).lstrip('#') for x in publication.get('topics', []))
         (job / '发布文案.txt').write_text(text, encoding='utf-8'); keep.add(job / '发布文案.txt')
-        package = self.app.edits.package(job, job / 'final.mp4', job / 'cover.png', plan, job / 'delivery' / '发布包.zip')
-        keep.update((package, package.with_suffix('.json')))
+        if self.read(job/'delivery.json', {}).get('mode') != 'workspace':
+            package = self.app.edits.package(job, job / 'final.mp4', job / 'cover.png', plan, job / 'delivery' / '发布包.zip')
+            keep.update((package, package.with_suffix('.json')))
         products.append({'index': index, 'version': version, 'job': str(job)})
 
     def accept(self, ident, token, for_cleanup=False):
@@ -252,7 +259,13 @@ class Acceptance:
             if not token or token != plan.get('token') or time.time() - plan.get('created', 0) > 1800:
                 raise ValueError('验收预览已失效，请重新查看清理内容')
             roots, keep = [Path(x) for x in plan['roots']], {Path(x) for x in plan['keep']}
-            allowed = {Path(task['job']), self.app.edits.root/ident, self.app.task_path(ident).parent/'source'}
+            from workspace import video_job
+            allowed = {self.app.edits.root/ident, self.app.task_path(ident).parent/'source'}
+            if task.get('workspace'):
+                allowed.update(video_job(task,index) for index in range(task['count']))
+                allowed.add(Path(task['job'])/'batch-planning')
+            else:
+                allowed.add(Path(task['job']))
             allowed.update(self.app.data/'queue-workers'/r['id'] for r in self.app.queue.data()['items'] if r['taskId']==ident)
             if not set(roots).issubset(allowed) or any(not any(p == r or r in p.parents for r in roots) for p in keep):
                 raise ValueError('清理范围超出本任务，未进行清理')
@@ -291,7 +304,7 @@ class Acceptance:
                     if digest(record['path']) != record['sha256']:
                         raise ValueError('成品核验未通过')
                 from shared_cache import SharedCache
-                owners=[Path(task['job'])]+[Path(task['job'])/f'variant-{i+1:02d}' for i in range(task['count'])]
+                owners=[Path(task['job'])]+[video_job(task,i) for i in range(task['count'])]
                 shared_released=SharedCache(self.app.project).release_owners(owners)
             except Exception:
                 self.app.update(ident, reviewStatus='accepted',cleanupStatus='failed', cleanupInterrupted=True)
@@ -321,6 +334,7 @@ class Acceptance:
             target = source / asset['name']
             if source.resolve() not in target.resolve().parents:
                 raise ValueError('素材路径不合法')
-            self.app.ensure_dir(target.parent); shutil.copy2(stored, target)
+            from publish_assets import link_or_copy
+            link_or_copy(stored, target)
         (source / ('000_机构资料_'+task['institutionId']+'.txt')).write_text(task.get('materialIntroduction', ''), encoding='utf-8')
         return source

@@ -141,25 +141,33 @@ def freeze(job):
     job=Path(job);bound=job/'runtime.json'
     if bound.exists():return read(bound)
     cfg=resolved(job);person_asset=cfg['avatar'].get('portrait')
+    workbench = bool(os.environ.get('MONTAGE_WORKBENCH_DELIVERY'))
+    if workbench:
+        from shared_cache import SharedCache
+        cache = SharedCache(root())
+        def freeze_asset(source, target):
+            cache.share_immutable(source,target,job,namespace='assets')
+    else:
+        freeze_asset = shutil.copy2
     if cfg.get('music',{}).get('enabled'):
         resource=cfg['music'].get('resource')
         if not resource or not Path(resource).is_file():raise ValueError('默认或指定配乐不存在，请恢复 skill 音乐资源或明确关闭配乐。')
         source=Path(resource);dest=job/'assets/music'/('source'+source.suffix.lower())
         dest.parent.mkdir(parents=True,exist_ok=True)
-        if source.resolve()!=dest.resolve():shutil.copy2(source,dest)
+        if source.resolve()!=dest.resolve():freeze_asset(source,dest)
         cfg['music']['resource']=str(dest.resolve())
     if person_asset:
         dest=job/'assets/person'/Path(person_asset).name;dest.parent.mkdir(parents=True,exist_ok=True)
-        if Path(person_asset).resolve()!=dest.resolve():shutil.copy2(person_asset,dest)
+        if Path(person_asset).resolve()!=dest.resolve():freeze_asset(person_asset,dest)
         cfg['avatar']['portrait']=str(dest.resolve())
     cover_asset=cfg.get('person',{}).get('coverPortrait')
     if cover_asset:
         dest=job/'assets/person/cover-portrait.png';dest.parent.mkdir(parents=True,exist_ok=True)
-        if Path(cover_asset).resolve()!=dest.resolve():shutil.copy2(cover_asset,dest)
+        if Path(cover_asset).resolve()!=dest.resolve():freeze_asset(cover_asset,dest)
         cfg['person']['coverPortrait']=str(dest.resolve())
     if cfg.get('cover',{}).get('image'):
         source=Path(cfg['cover']['image']);dest=job/'assets/cover-input'/source.name;dest.parent.mkdir(parents=True,exist_ok=True)
-        if source.resolve()!=dest.resolve():shutil.copy2(source,dest)
+        if source.resolve()!=dest.resolve():freeze_asset(source,dest)
         cfg['cover']['image']=str(dest.resolve())
     font_refs=[(cfg.get('typography',{}),'body_font','caption'),(cfg.get('cover',{}),'font','cover')]
     font_refs.extend((value,'file','template-'+role) for role,value in cfg.get('template',{}).get('overrides',{}).get('fonts',{}).items())
@@ -183,7 +191,13 @@ def freeze(job):
         if staging.exists():shutil.rmtree(staging)
         staging.mkdir(parents=True)
         for p in files:
-            dest=staging/p.relative_to(SKILL);dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(p,dest)
+            relative = p.relative_to(SKILL)
+            dest=staging/relative
+            if workbench and relative.parts[0]=='assets':
+                cache.share_immutable(p,dest,engine,namespace='assets')
+            else:
+                dest.parent.mkdir(parents=True,exist_ok=True)
+                shutil.copy2(p,dest)
         staging.replace(engine)
     # A pluggable engine implements generate/resume/review and the bundled run.json contract.
     connection=load()['connections'].get(cfg.get('person',{}).get('connection'),{})

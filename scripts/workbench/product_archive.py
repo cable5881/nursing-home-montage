@@ -56,10 +56,33 @@ class ProductArchive:
             if task['results']:result.append(task)
         return sorted(result,key=lambda x:x['updated'],reverse=True)
 
-    def media(self,ident,index,version,kind):
+    def product(self, ident, index, version):
         self.app.task_path(ident)
         item=self.read(self.root/ident/'manifest.json',{})
         product=next((p for p in item.get('products',[]) if p['index']==int(index) and p['version']==version),None)
+        if product is None:
+            raise ValueError('归档成品不存在')
+        return item, product
+
+    def workspace_media(self, ident, index, version):
+        item, product = self.product(ident,index,version)
+        if not item.get('workspace'):
+            return None
+        from workspace import delivery_folder, owned_batch
+        owned_batch(self.app, item)
+        folder = delivery_folder(item,product['index'],product['version'])
+        if folder.resolve() != folder.absolute() or not all((folder/name).is_file() and not (folder/name).is_symlink()
+                for name in ('final.mp4','cover.png','发布文案.txt')):
+            raise ValueError('工作区的归档成品缺失')
+        return folder, product['title']
+
+    def media(self,ident,index,version,kind):
+        item, product = self.product(ident,index,version)
+        workspace = self.workspace_media(ident,index,version) if item.get('workspace') else None
+        if workspace:
+            if kind == 'video':return workspace[0]/'final.mp4'
+            if kind == 'cover':return workspace[0]/'cover.png'
+            raise ValueError('请通过下载入口生成发布包')
         names={'video':'final.mp4','cover':'cover.png','package':'发布包.zip'}
         if not product or kind not in names:raise ValueError('归档成品不存在')
         path=self.root/ident/str(product['index'])/product['version']/names[kind]
@@ -77,9 +100,13 @@ class ProductArchive:
 
     def roots(self,task):
         ident=task['id'];self.app.task_path(ident)
-        expected=self.app.project/'作品'/('工作台_'+ident)
-        if Path(task['job'])!=expected:raise ValueError('只能清理这个任务自己创建的工程')
-        roots=[expected,self.app.edits.root/ident,self.app.task_path(ident).parent]
+        from workspace import owned_batch, video_job
+        expected = owned_batch(self.app,task)
+        roots=[self.app.edits.root/ident,self.app.task_path(ident).parent]
+        if task.get('workspace'):
+            roots += [expected/'batch-planning'] + [video_job(task,i) for i in range(task['count'])]
+        else:
+            roots.append(expected)
         if any(not re.fullmatch(r'[a-f0-9]{12}',row['id']) for row in self.app.queue.data()['items'] if row['taskId']==ident):raise ValueError('任务队列记录无效')
         roots += [self.app.data/name/row['id'] for row in self.app.queue.data()['items'] if row['taskId']==ident for name in ('queue-workers','pipeline-runs')]
         baseline=self.read(self.app.project/'项目状态.json',{})
@@ -90,6 +117,7 @@ class ProductArchive:
         return roots
 
     def check_references(self,task,roots):
+        from workspace import video_job
         def threatened(value):
             if isinstance(value,dict):return any(threatened(v) for v in value.values())
             if isinstance(value,list):return any(threatened(v) for v in value)
@@ -100,8 +128,10 @@ class ProductArchive:
             if other['id']==task['id']:continue
             if threatened({k:other.get(k) for k in ('source','baseJob','basePlan')}):raise ValueError('其他任务仍引用这个工程，请先处理关联任务')
             root=Path(other['job'])
-            for name in ('inventory.json','runtime.json','plan.json','asset-sources.json'):
-                if threatened(self.read(root/name,{})):raise ValueError('其他任务仍引用这个工程的资产')
+            other_jobs = {root, *(video_job(other,index) for index in range(other['count']))}
+            for other_job in other_jobs:
+                for name in ('inventory.json','runtime.json','plan.json','asset-sources.json'):
+                    if threatened(self.read(other_job/name,{})):raise ValueError('其他任务仍引用这个工程的资产')
             for folder,dirs,names in os.walk(root,followlinks=False):
                 for name in dirs+names:
                     p=Path(folder)/name
@@ -171,8 +201,8 @@ class ProductArchive:
         ident=task['id'];path=self.root/ident/'manifest.json'
         manifest=self.read(path,{})
         products={(p['index'],p['version']):p for p in manifest.get('products',[])}
-        root=Path(task['job'])
-        jobs=[(i,'original','原始交付',root if task['count']==1 else root/f'variant-{i+1:02d}') for i in range(task['count'])]
+        from workspace import delivery_folder, video_job
+        jobs=[(i,'original','原始交付',video_job(task,i)) for i in range(task['count'])]
         for file in (self.app.edits.root/ident).glob('*/versions/*/edition.json'):
             edition=self.read(file,{})
             if edition.get('status')=='completed':jobs.append((int(file.parents[2].name),file.parent.name,edition.get('label','封面修改版'),file.parent))
@@ -188,22 +218,32 @@ class ProductArchive:
                 report=self.read(job/'verification.json',{})
                 if not report.get('fullDecode') or report.get('sha256')!=sha(job/'final.mp4'):raise ValueError('封面成品尚未核验')
             plan=self.read(job/'plan.json',{})
-            package=self.app.edits.package(job,job/'final.mp4',job/'cover.png',plan,job/'delivery/发布包.zip')
             publication=plan.get('publication',{})
-            text=str(publication.get('title',''))+'\n\n'+str(publication.get('description',''))+'\n\n'+' '.join('#'+str(t).lstrip('#') for t in publication.get('topics',[]))
-            target=self.root/ident/str(index)/version
-            hashes={name:self.copy_product(source,target/name) for name,source in [('final.mp4',job/'final.mp4'),('cover.png',job/'cover.png'),('发布包.zip',package)]}
-            (target/'发布文案.txt').write_text(text,encoding='utf-8')
+            target=delivery_folder(task,index,version)
+            if target is not None:
+                from publish_assets import workspace_product
+                digest = self.read(job/'verification.json',{})['sha256']
+                workspace_product(job,target,{'title':task['title'], **publication},digest)
+                hashes = {name:sha(target/name) for name in ('final.mp4','cover.png','发布文案.txt')}
+            else:
+                from publish_assets import publication_text
+                package=self.app.edits.package(job,job/'final.mp4',job/'cover.png',plan,job/'delivery/发布包.zip')
+                target=self.root/ident/str(index)/version
+                hashes={name:self.copy_product(source,target/name) for name,source in [('final.mp4',job/'final.mp4'),('cover.png',job/'cover.png'),('发布包.zip',package)]}
+                (target/'发布文案.txt').write_text(publication_text(publication),encoding='utf-8')
             products[key]={'index':index,'version':version,'label':label,'title':publication.get('title') or task['title'],'sha256':hashes}
         for p in products.values():
             for name,fingerprint in p['sha256'].items():
-                target=self.root/ident/str(p['index'])/p['version']/name
+                folder=delivery_folder(task,p['index'],p['version']) or self.root/ident/str(p['index'])/p['version']
+                target=folder/name
                 if target.is_symlink() or sha(target)!=fingerprint:raise ValueError('归档成品校验失败，未清理任务')
         current_versions=manifest.get('currentVersions',{})
         for index in range(task['count']):
             current_versions[str(index)]=self.read(self.app.edits.root/ident/str(index)/'current.json',{}).get('version',current_versions.get(str(index),'original'))
         manifest={k:task.get(k) for k in ('id','title','institutionId','institutionName','personName','created')}
         manifest.update(updated=time.time(),products=list(products.values()),currentVersions=current_versions)
+        if task.get('workspace'):
+            manifest.update(workspace=task['workspace'], job=task['job'])
         if products:self.write(path,manifest)
 
     def remove_tree(self,root):
@@ -228,7 +268,8 @@ class ProductArchive:
         for root in roots:
             if root!=task_root:self.remove_tree(root)
         from shared_cache import SharedCache
-        owners=[Path(task['job'])]+[Path(task['job'])/f'variant-{i+1:02d}' for i in range(task['count'])]
+        from workspace import video_job
+        owners=[Path(task['job'])]+[video_job(task,i) for i in range(task['count'])]
         SharedCache(self.app.project).release_owners(owners)
         data=self.app.queue.data()
         for row in data['items']:

@@ -122,7 +122,8 @@ class MusicLibrary:
             row,path=self.track(ident or self.data()['defaultId'],active=True)
             if not path.is_file() or sha(path)!=row['sha256']:raise ValueError('配乐文件已变化，请重新上传后选择')
         target=self.app.task_path(task_id).parent/'music'/('source'+path.suffix.lower())
-        target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(path,target)
+        from publish_assets import link_or_copy
+        link_or_copy(path,target)
         if sha(target)!=row['sha256']:raise ValueError('配乐复制未完成，请重试')
         return {k:row[k] for k in ('id','name','filename','sha256','duration')}|{'resource':str(target)}
 

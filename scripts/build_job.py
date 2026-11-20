@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import hashlib,json,math,re
 from workflow import *
@@ -124,7 +125,16 @@ def build(job):
             row=files[s['path']];orig=(source_root/s['path']).resolve()
             if sha(orig)!=row['sha256']:raise RuntimeError('Input changed since inventory: '+s['path'])
             ext=orig.suffix.lower();dest=job/'assets/footage'/(row['sha256'][:12]+ext)
-            copy_asset(orig,dest)
+            if not dest.is_file() and os.environ.get('MONTAGE_WORKBENCH_DELIVERY'):
+                tasks = project_root()/'.montage/workbench/tasks'
+                if orig.is_relative_to(tasks) and source_root.is_relative_to(tasks):
+                    from publish_assets import link_or_copy
+                    link_or_copy(orig,dest)
+                else:
+                    from shared_cache import SharedCache
+                    SharedCache(project_root()).share_immutable(orig,dest,job,namespace='assets')
+            else:
+                copy_asset(orig,dest)
             shot={'id':f'shot-{len(shots):02}','asset':str(dest.relative_to(job)),'start':st,'end':end,'duration':end-st,'sourceStart':src_start,'positionY':s.get('positionY',50),'description':s['description'],'sentenceIndex':si}
             shots.append(shot);ledger.append({'file':shot['asset'],'source':str(orig),'sha256':row['sha256'],'kind':row['kind'],'modified':False})
     write(job/'shot-list.json',shots);write(job/'asset-sources.json',ledger)

@@ -52,9 +52,8 @@ class VideoEdits:
             ready=task['status']=='completed' or any(x['index']==index and x['status']=='completed' for x in self.app.queue.for_task(ident))
             if not ready or not 0 <= index < task['count']:
                 raise ValueError('请在视频制作完成后编辑')
-            job = Path(task['job'])
-            if task['count'] > 1:
-                job /= f'variant-{index+1:02d}'
+            from workspace import video_job
+            job = video_job(task,index)
             video = job / 'final.mp4'
             if task.get('videoSpecs'):
                 spec=task['videoSpecs'][index];task={**task,'person':spec['person'],'personName':spec['personName']}
@@ -81,10 +80,30 @@ class VideoEdits:
         with self.app.lock:
             return publish_zip(video,cover,plan.get('publication',{}),target)
 
+    def workspace_media(self, ident, index, version=None):
+        from workspace import delivery_folder
+        task, job, _, _, edition = self.current(ident,index,version)
+        root = Path(edition['job'])
+        output = delivery_folder(task,index,edition['id'])
+        if output is None or self.read(root/'delivery.json', {}).get('mode') != 'workspace':
+            return None
+        if output.resolve() != output.absolute() or not all((output/name).is_file()
+                and not (output/name).is_symlink() for name in ('final.mp4','cover.png','发布文案.txt')):
+            raise ValueError('工作区的交付产物缺失')
+        return output, self.read(root/'plan.json', {}).get('publication', {}).get('title', task['title'])
+
     def media(self, ident, index, kind, version=None):
         task, job, video, folder, edition = self.current(ident, index, version)
         edited = edition['id'] != 'original'
         root = Path(edition['job']) if edited else job
+        product = self.workspace_media(ident,index,edition['id'])
+        if product is not None:
+            folder, _ = product
+            if kind == 'video':return folder/'final.mp4'
+            if kind == 'cover':return folder/'cover.png'
+            if kind == 'package':
+                return self.package(root, folder/'final.mp4', folder/'cover.png',
+                                    self.read(root/'plan.json',{}), folder/'发布包.zip')
         if kind == 'video':
             return video
         if kind == 'cover':
@@ -252,7 +271,14 @@ class VideoEdits:
                 if not audio:raise ValueError('音轨一致性检查失败')
             report={'fullDecode':True,'firstFrameMeanError':first,'secondFrameMeanError':second,'audioUnchanged':audio,'frameCount':a.get('nb_frames'),'duration':a.get('duration'),'sha256':digest(final),'sourceSha256':digest(source),'operation':'cover-first-frame'}
             self.write(out/'verification.json',report)
-            self.package(out,final,out/'cover.png',self.read(out/'plan.json'),out/'delivery/workbench/发布包.zip')
+            from workspace import delivery_folder
+            task = self.app.task(ident) if ident != 'reference' else {}
+            output = delivery_folder(task,index,operation['id'])
+            if output is not None:
+                from publish_assets import workspace_product
+                self.write(out/'delivery.json',workspace_product(out,output,self.read(out/'plan.json')['publication'],report['sha256']))
+            else:
+                self.package(out,final,out/'cover.png',self.read(out/'plan.json'),out/'delivery/workbench/发布包.zip')
             edition={'id':operation['id'],'created':time.time(),'status':'completed','label':'封面修改 · '+time.strftime('%m/%d %H:%M'),'job':str(out),'video':str(final),'parentVersion':operation['baseVersion']}
             self.write(out/'edition.json',edition)
             with self.app.transaction():

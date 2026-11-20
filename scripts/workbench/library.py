@@ -181,7 +181,8 @@ class Library:
                     raise ValueError("素材文件缺失或被修改，请重新导入：" + a["name"])
                 dest = destination / a["name"]
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dest)
+                from publish_assets import link_or_copy
+                link_or_copy(src, dest)
                 manifest.append({k: a[k] for k in ("id", "name", "sha256", "version")})
             introduction = "机构名称：" + value["name"] + ("\n机构位置：" + value["address"] if value["address"] else "") + ("\n用户确认的机构介绍：\n" + value["description"] if value["description"] else "")
             (destination / ("000_机构资料_" + ident + ".txt")).write_text(introduction, encoding="utf-8")

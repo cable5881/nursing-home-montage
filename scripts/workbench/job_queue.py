@@ -49,7 +49,8 @@ class JobQueue:
                 data['nextSequence']+=1
             for i,spec in enumerate(specs):
                 key=uuid.uuid4().hex[:12]
-                job=Path(task['job']) if task['count']==1 else Path(task['job'])/f'variant-{i+1:02d}'
+                from workspace import video_job
+                job=video_job(task,i)
                 data['items'].append({'id':key,'taskId':task['id'],'index':i,'kind':'video','sequence':data['nextSequence'],'person':spec['person'],'personName':spec['personName'],'number':spec.get('number',i+1),'title':task['title'],'job':str(job),'status':'queued','phase':0,'message':'等待按提交顺序制作','created':time.time(),'updated':time.time(),'settled':True,'generation':0})
                 data['nextSequence']+=1
             self.save(data)

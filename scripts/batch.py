@@ -62,6 +62,7 @@ def register_queue(folder):
     data=read(folder/'batch.json')
     sys.path.insert(0,str(Path(__file__).parent/'workbench'))
     from server import App
+    from workspace import delivery_folder, video_job
     app=App(Path(data['project']),Path(__file__).resolve().parents[1],recover=False)
     with app.transaction():
         if data.get('workbenchTaskId') and app.queue.for_task(data['workbenchTaskId']):
@@ -81,7 +82,7 @@ def register_queue(folder):
             # Explicitly importing an old batch preserves frozen plans and paid
             # assets. It does not restart the legacy parallel scheduler.
             for i,row in enumerate(data['items']):
-                source=folder/row['job'];target=Path(task['job'])/f'variant-{i+1:02d}' if len(data['items'])>1 else Path(task['job'])
+                source=folder/row['job'];target=video_job(task,i)
                 if source.is_dir():shutil.copytree(source,target,dirs_exist_ok=True,ignore=shutil.ignore_patterns('node_modules','.hyperframes'))
         else:
             target,_=app.planning.initialize(task)
@@ -95,7 +96,14 @@ def register_queue(folder):
                 if row['taskId']!=task['id'] or row['kind']!='video':continue
                 try:app.verify_job(Path(row['job']))
                 except (OSError,ValueError):pass
-                else:row.update(status='completed',settled=True,phase=6,message='旧批次已核验成品已保留')
+                else:
+                    if output := delivery_folder(task,row['index']):
+                        from publish_assets import workspace_product
+                        job = Path(row['job'])
+                        result = workspace_product(job,output,read(job/'plan.json')['publication'],
+                                                   read(job/'verification.json')['sha256'])
+                        write(job/'delivery.json',result)
+                    row.update(status='completed',settled=True,phase=6,message='旧批次已核验成品已保留')
             app.queue.save(queue);app.queue.sync_task(task['id'])
         data.update(workbenchTaskId=task['id'],max_active=1,queueVersion=2,importState='ready')
         write(folder/'batch.json',data)

@@ -40,7 +40,18 @@ def hyperframes_cli(job):
     if not package or read(package)['version']!=cfg['render']['cli_version']:raise ValueError('Configured HyperFrames CLI does not match the pinned version')
     return ['node',str(entry)]
 def hyperframes(job,args,cwd=None,check=True):
-    return run([*hyperframes_cli(job),*args],cwd=cwd or job,check=check,env=pc.render_env(job))
+    env = pc.render_env(job)
+    if os.environ.get('MONTAGE_WORKBENCH_DELIVERY') and args[0] in ('check','snapshot','render'):
+        cache = pc.directory()/'cache/proxy'/settings(job)['render']['cli_version']
+        cache.mkdir(exist_ok=True,parents=True)
+        local = job/'.transcode-cache'
+        if not local.exists() and not local.is_symlink():
+            try:
+                local.symlink_to(cache,target_is_directory=True)
+            except OSError:
+                pass  # Windows permissions and volumes without symlinks use a video-local cache.
+        env.setdefault('HYPERFRAMES_PROXY_CACHE_MAX_BYTES', str(512 * 1024**2))
+    return run([*hyperframes_cli(job),*args],cwd=cwd or job,check=check,env=env)
 def state(job,**fields):
     old=read(job/'state.json') if (job/'state.json').exists() else {}
     old.update(fields);write(job/'state.json',old);return old
@@ -189,8 +200,15 @@ def setup(job,install=False):
     for name in ('package.json','package-lock.json','hyperframes.json'):copy_asset(template/name,job/name)
     (job/'assets/fonts').mkdir(parents=True,exist_ok=True);(job/'assets/reference').mkdir(exist_ok=True)
     copy_asset(SKILL/'assets/gsap.min.js',job/'assets/gsap.min.js')
-    copy_asset(SKILL/'assets/NotoSansSC-Black.otf',job/'assets/fonts/NotoSansSC-Black.otf')
-    if cfg['typography'].get('reference_asset'):copy_asset(cfg['typography']['reference_asset'],job/'assets/reference/orange-ui-target.png')
+    if os.environ.get('MONTAGE_WORKBENCH_DELIVERY'):
+        from shared_cache import SharedCache
+        cache=SharedCache(project_root())
+        cache.share_immutable(SKILL/'assets/NotoSansSC-Black.otf',job/'assets/fonts/NotoSansSC-Black.otf',job,namespace='assets')
+        if cfg['typography'].get('reference_asset'):
+            cache.share_immutable(cfg['typography']['reference_asset'],job/'assets/reference/orange-ui-target.png',job,namespace='assets')
+    else:
+        copy_asset(SKILL/'assets/NotoSansSC-Black.otf',job/'assets/fonts/NotoSansSC-Black.otf')
+        if cfg['typography'].get('reference_asset'):copy_asset(cfg['typography']['reference_asset'],job/'assets/reference/orange-ui-target.png')
     e=read(ENGINE/'config.json');e['tts'].update({k:cfg['voice'][k] for k in ('speaker','resource_id','model','speech_rate')})
     if cfg['avatar'].get('portrait'):e['image']=str(Path(cfg['avatar']['portrait']).resolve())
     else:e['image']=''

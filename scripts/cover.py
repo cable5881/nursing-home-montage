@@ -97,7 +97,9 @@ def prepare(job):
             from fontTools.ttLib import TTFont
             temporary=cached.with_name(cached.name+f'.{os.getpid()}.tmp')
             face=TTFont(font,fontNumber=0,recalcTimestamp=False);face.flavor='woff2';face.save(temporary);face.close();temporary.replace(cached)
-        shutil.copy2(cached,webfont);write(font_record,{'key':font_key})
+        from publish_assets import link_or_copy
+        link_or_copy(cached,webfont)
+        write(font_record,{'key':font_key})
     value=plan['cover']['main_title'];highlights=value.get('highlights',[]) if isinstance(value,dict) else plan['cover'].get('highlights',[])
     payload={'header_text':cfg['cover']['header_text'],'title':title_text(plan),'highlights':highlights,'labels':[x['text'] for x in plan['cover']['labels']],
         'institution_name':plan['institution']['name'],'identity':{'person_id':person['id'],'person_name':person['name'],'social_media_name':person['socialMediaName']},

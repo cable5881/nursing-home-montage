@@ -14,6 +14,7 @@ BUNDLE = SKILL / 'scripts/workbench'
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--project', type=Path, default=Path.cwd())
+    p.add_argument('--workspace', help='新任务的工作区目录，留空恢复项目目录')
     p.add_argument('--mode', choices=('workbench', 'direct', 'maintenance'), default='workbench')
     p.add_argument('--host', choices=('codex', 'workbuddy', 'local'), default='codex')
     p.add_argument('--request', type=Path)
@@ -36,6 +37,15 @@ def main():
     from server import App, read, write
     from launch import launch
     result = {'mode': args.mode, 'httpStarted': args.mode == 'workbench'}
+    app = App(project, SKILL, recover=False)
+    with app.transaction():
+        settings_file = app.data/'workspace.json'
+        settings = read(settings_file, {})
+        settings['defaultDirectory'] = str(Path.cwd().resolve())
+        write(settings_file, settings)
+        if args.workspace is not None:
+            app.save_workspace(args.workspace)
+        result['workspace'] = str(app.workspace())
     if args.mode == 'workbench':
         result.update(launch(project, args.no_open, managed=args.host=='workbuddy', independent=args.host=='local'))
         if result.get('needsHostService'):

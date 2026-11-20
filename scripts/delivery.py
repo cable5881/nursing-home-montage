@@ -25,6 +25,12 @@ def package(job):
     require_current(job)
     for name in ('cover.png','cover-editor.html'):
         if not (job/name).is_file():raise ValueError('发布包缺少 '+name)
+    output = os.environ.get('MONTAGE_WORKBENCH_DELIVERY')
+    if output and os.environ.get('MONTAGE_QUEUE_ITEM'):
+        from publish_assets import workspace_product
+        record = workspace_product(job, output, meta, report['sha256'])
+        write(job/'delivery.json', record)
+        return record
     if os.environ.get('MONTAGE_QUEUE_ITEM') or cfg.get('delivery',{}).get('mode')=='workbench':
         from publish_assets import publish_zip,publication_text
         archive=publish_zip(video,job/'cover.png',meta,job/'delivery/发布包.zip')

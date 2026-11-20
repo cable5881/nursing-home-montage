@@ -144,16 +144,17 @@ class SharedCache:
             self._reference(namespace,key,owner)
             return body['data']
 
-    def share_immutable(self, source, target, owner):
-        """Share read-only source fonts; generated subsets remain job-local."""
+    def share_immutable(self, source, target, owner, namespace='font-sources'):
+        """Use a verified, project-owned snapshot for a read-only input."""
         source,target=Path(source),Path(target)
         key=key_for({'sha256':file_hash(source),'suffix':source.suffix.lower()})
-        self.store_files('font-sources',key,{'font':source},owner=owner)
-        directory=self.path('font-sources',key)
+        self.store_files(namespace,key,{'asset':source},owner=owner)
+        directory=self.path(namespace,key)
         with file_lock(directory.with_suffix('.lock')):
-            entry=self.read('font-sources',key)
-            if entry is None:raise ValueError('共享字体校验未通过')
-            cached=directory/entry['files']['font']['name']
+            entry=self.read(namespace,key)
+            if entry is None:raise ValueError('共享文件校验未通过')
+            item = entry['files'].get('asset') or entry['files']['font']
+            cached=directory/item['name']
             target.parent.mkdir(parents=True,exist_ok=True)
             temp=target.with_name(target.name+'.'+uuid.uuid4().hex+'.tmp')
             try:
@@ -169,7 +170,7 @@ class SharedCache:
     def release_owners(self, owners):
         """Called only after the user accepts cleanup. Never follows job links."""
         owners={str(Path(p).resolve()) for p in owners};released=0
-        for namespace in ('voice','avatar','cutout','font-sources'):
+        for namespace in ('voice','avatar','cutout','font-sources','assets'):
             for path in (self.root/'refs'/namespace).glob('*.json'):
                 key=path.stem
                 directory=self.path(namespace,key)

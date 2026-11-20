@@ -111,7 +111,8 @@ class BatchPlanning:
         return draft, parsed, fingerprint
 
     def validate_item(self, task, folder, index, plan, validate):
-        job = Path(task['job']) if task['count']==1 else Path(task['job']) / f'variant-{index+1:02d}'
+        from workspace import video_job
+        job = video_job(task,index)
         self.app.ensure_dir(job)
         if (job / 'runtime.json').is_file(): raise ValueError('已有视频已进入执行，不允许重写整批策划')
         self.write(job / 'plan.json', plan)
@@ -147,7 +148,8 @@ class BatchPlanning:
             expected = folder / 'plans' / Path(row['path']).name
             if Path(row['path']).resolve() != expected.resolve() or row['sha256'] != file_digest(expected):
                 raise ValueError('逐条计划在复核后发生变化')
-            job = Path(task['job']) if task['count']==1 else Path(task['job']) / f"variant-{row['index']+1:02d}"
+            from workspace import video_job
+            job = video_job(task,row['index'])
             if digest(self.read(job/'plan.json')) != row.get('planFingerprint',digest(self.read(expected))): raise ValueError('视频工程与批准计划不一致')
         return value
 
